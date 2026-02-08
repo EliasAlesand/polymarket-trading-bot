@@ -166,8 +166,9 @@ class ApiClient(ThreadLocalSessionMixin):
                     raise ApiError(f"Unsupported method: {method}")
 
                 if not response.ok:
-                    logger.error(f"{method} {endpoint} -> {response.status_code}: {response.text[:500]}")
-                response.raise_for_status()
+                    error_body = response.text[:500]
+                    logger.error(f"{method} {endpoint} -> {response.status_code}: {error_body}")
+                    raise ApiError(f"{response.status_code}: {error_body}")
                 return response.json() if response.text else {}
 
             except requests.exceptions.RequestException as e:

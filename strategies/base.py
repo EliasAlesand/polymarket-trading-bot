@@ -302,14 +302,14 @@ class BaseStrategy(ABC):
 
     async def execute_buy(self, side: str, current_price: float) -> bool:
         """
-        Execute market buy order.
+        Execute market buy order and wait for fill confirmation.
 
         Args:
             side: "up" or "down"
             current_price: Current market price
 
         Returns:
-            True if order placed successfully
+            True if order filled successfully
         """
         token_id = self.token_ids.get(side)
         if not token_id:
@@ -328,31 +328,62 @@ class BaseStrategy(ABC):
             side="BUY"
         )
 
-        if result.success:
-            self.log(f"Order placed: {result.order_id}", "success")
-            self.positions.open_position(
-                side=side,
-                token_id=token_id,
-                entry_price=current_price,
-                size=size,
-                order_id=result.order_id,
-            )
-            return True
-        else:
+        if not result.success:
             self.log(f"Order failed: {result.message}", "error")
             return False
+
+        self.log(f"Order placed: {result.order_id}", "success")
+
+        # Check if order was immediately matched
+        status = result.data.get("status", "")
+        if status == "matched":
+            self.log("Order matched immediately", "success")
+        else:
+            # Order is live/delayed — wait for fill
+            self.log(f"Order status: {status}, waiting for fill...", "info")
+            filled = await self.bot.wait_for_fill(result.order_id, timeout=15.0)
+            if not filled:
+                self.log("Order not filled, cancelling", "warning")
+                await self.bot.cancel_order(result.order_id)
+                return False
+
+        self.positions.open_position(
+            side=side,
+            token_id=token_id,
+            entry_price=current_price,
+            size=size,
+            order_id=result.order_id,
+        )
+        return True
 
     async def execute_sell(self, position: Position, current_price: float) -> bool:
         """
         Execute sell order to close position.
+
+        Verifies the buy order was actually filled before attempting to sell.
 
         Args:
             position: Position to close
             current_price: Current price
 
         Returns:
-            True if order placed
+            True if sell order filled
         """
+        # Verify the original buy was actually filled before selling
+        if position.order_id:
+            order_data = await self.bot.get_order(position.order_id)
+            if order_data:
+                size_matched = float(order_data.get("size_matched", "0"))
+                if size_matched <= 0:
+                    self.log(
+                        f"Buy order {position.order_id} not filled, "
+                        f"cancelling position",
+                        "warning"
+                    )
+                    await self.bot.cancel_order(position.order_id)
+                    self.positions.close_position(position.id, realized_pnl=0)
+                    return False
+
         sell_price = max(current_price - 0.02, 0.01)
         pnl = position.get_pnl(current_price)
 
@@ -363,13 +394,13 @@ class BaseStrategy(ABC):
             side="SELL"
         )
 
-        if result.success:
-            self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
-            self.positions.close_position(position.id, realized_pnl=pnl)
-            return True
-        else:
+        if not result.success:
             self.log(f"Sell failed: {result.message}", "error")
             return False
+
+        self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
+        self.positions.close_position(position.id, realized_pnl=pnl)
+        return True
 
     def _print_summary(self) -> None:
         """Print session summary."""

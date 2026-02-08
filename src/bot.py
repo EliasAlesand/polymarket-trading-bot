@@ -78,10 +78,11 @@ class OrderResult:
         """Create from API response."""
         success = response.get("success", False)
         error_msg = response.get("errorMsg", "")
+        order_id = response.get("orderID") or response.get("orderId")
 
         return cls(
             success=success,
-            order_id=response.get("orderId"),
+            order_id=order_id,
             status=response.get("status"),
             message=error_msg if not success else "Order placed successfully",
             data=response
@@ -472,6 +473,44 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Failed to cancel market orders: {e}")
             return OrderResult(success=False, message=str(e))
+
+    async def wait_for_fill(
+        self,
+        order_id: str,
+        timeout: float = 15.0,
+        poll_interval: float = 1.0
+    ) -> bool:
+        """
+        Poll order status until matched/filled or timeout.
+
+        Args:
+            order_id: Order ID to check
+            timeout: Max seconds to wait
+            poll_interval: Seconds between polls
+
+        Returns:
+            True if order was matched/filled
+        """
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            order_data = await self.get_order(order_id)
+            if order_data:
+                size_matched = order_data.get("size_matched", "0")
+                original_size = order_data.get("original_size", "0")
+                try:
+                    if float(size_matched) > 0:
+                        logger.info(
+                            f"Order {order_id} filled: "
+                            f"{size_matched}/{original_size}"
+                        )
+                        return True
+                except (ValueError, TypeError):
+                    pass
+            await asyncio.sleep(poll_interval)
+
+        logger.warning(f"Order {order_id} not filled within {timeout}s")
+        return False
 
     async def get_open_orders(self) -> List[Dict[str, Any]]:
         """
