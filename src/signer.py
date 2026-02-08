@@ -119,7 +119,7 @@ class Order:
             raise ValueError(f"Invalid size: {self.size}")
 
         if self.nonce is None:
-            self.nonce = int(time.time())
+            self.nonce = 0
 
         # Get rounding config for this tick size
         price_dec, size_dec, amount_dec = ROUNDING_CONFIG.get(

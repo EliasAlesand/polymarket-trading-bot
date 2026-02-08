@@ -320,6 +320,12 @@ class TradingBot:
                 self.clob_client.get_tick_size, token_id
             )
 
+            # Resolve fee rate: use market fee if caller didn't specify
+            if fee_rate_bps == 0:
+                fee_rate_bps = await self._run_in_thread(
+                    self.clob_client.get_fee_rate_bps, token_id
+                )
+
             # Create order with proper rounding
             order = Order(
                 token_id=token_id,

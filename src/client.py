@@ -491,6 +491,26 @@ class ClobClient(ApiClient):
             return result.get("data", [])
         return result if isinstance(result, list) else []
 
+    def get_fee_rate_bps(self, token_id: str) -> int:
+        """
+        Get the fee rate in basis points for a token.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Fee rate in basis points (e.g., 100 = 1%)
+        """
+        try:
+            result = self._request(
+                "GET",
+                "/fee-rate",
+                params={"token_id": token_id}
+            )
+            return result.get("base_fee") or 0
+        except Exception:
+            return 0
+
     def get_tick_size(self, token_id: str) -> str:
         """
         Get the tick size for a token.
