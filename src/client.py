@@ -148,14 +148,16 @@ class ApiClient(ThreadLocalSessionMixin):
                         params=params, timeout=self.timeout
                     )
                 elif method.upper() == "POST":
+                    body = json.dumps(data, separators=(',', ':')) if data else None
                     response = session.post(
                         url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
+                        data=body, params=params, timeout=self.timeout
                     )
                 elif method.upper() == "DELETE":
+                    body = json.dumps(data, separators=(',', ':')) if data else None
                     response = session.delete(
                         url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
+                        data=body, params=params, timeout=self.timeout
                     )
                 else:
                     raise ApiError(f"Unsupported method: {method}")

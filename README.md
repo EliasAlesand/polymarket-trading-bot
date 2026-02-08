@@ -61,9 +61,9 @@ python strategies/flash_crash_strategy.py --coin BTC
 python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
 
 # Available options
---coin      BTC, ETH, SOL, XRP (default: ETH)
+--coin      BTC, ETH, SOL, XRP (default: BTC)
 --drop      Drop threshold as absolute change (default: 0.30)
---size      Trade size in USDC (default: 5.0)
+--size      Trade size in USDC (default: 1.0)
 --lookback  Detection window in seconds (default: 10)
 --take-profit  TP in dollars (default: 0.10)
 --stop-loss    SL in dollars (default: 0.05)

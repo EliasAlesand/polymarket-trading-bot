@@ -340,8 +340,35 @@ class MarketWebSocket:
         if not asset_ids:
             return False
 
+        if replace and self.is_connected:
+            # Mid-session replacement: unsubscribe old, subscribe new
+            old_assets = list(self._subscribed_assets - set(asset_ids))
+            self._orderbooks.clear()
+
+            if old_assets:
+                try:
+                    unsub_msg = json.dumps({"assets_ids": old_assets, "operation": "unsubscribe"})
+                    await self._ws.send(unsub_msg)
+                    logger.info(f"Unsubscribed from {len(old_assets)} old assets")
+                except Exception as e:
+                    logger.error(f"Failed to unsubscribe old assets: {e}")
+
+            self._subscribed_assets.clear()
+            self._subscribed_assets.update(asset_ids)
+
+            try:
+                sub_msg = json.dumps({"assets_ids": asset_ids, "operation": "subscribe"})
+                logger.info(f"Subscribing to {len(asset_ids)} new assets (replace)")
+                await self._ws.send(sub_msg)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to subscribe new assets: {e}")
+                if self._on_error:
+                    self._on_error(e)
+                return False
+
         if replace:
-            # Clear old subscriptions and cached data
+            # Not connected yet — just update state, will subscribe on connect
             self._subscribed_assets.clear()
             self._orderbooks.clear()
 
@@ -349,7 +376,6 @@ class MarketWebSocket:
         logger.info(f"subscribe() called with {len(asset_ids)} assets, is_connected={self.is_connected}, ws={self._ws is not None}")
 
         if not self.is_connected:
-            # Will subscribe after connect
             logger.info("Not connected yet, will subscribe after connect")
             return True
 

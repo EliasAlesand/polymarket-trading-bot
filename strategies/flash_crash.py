@@ -123,12 +123,20 @@ class FlashCrashStrategy(BaseStrategy):
             f"Mid: {Colors.RED}{down_mid:.4f}{Colors.RESET}  Spread: {down_spread:.4f}"
         )
 
-        # History info
-        up_history = self.prices.get_history_count("up")
-        down_history = self.prices.get_history_count("down")
+        # Drop delta: current price vs price from lookback_seconds ago
+        lookback = self.config.price_lookback_seconds
+        up_old = self.prices.get_price_at("up", lookback)
+        down_old = self.prices.get_price_at("down", lookback)
+        up_delta = (up_mid - up_old) if up_old and up_mid else 0
+        down_delta = (down_mid - down_old) if down_old and down_mid else 0
+        up_delta_color = Colors.RED if up_delta <= -self.flash_config.drop_threshold else Colors.GREEN if up_delta > 0 else ""
+        down_delta_color = Colors.RED if down_delta <= -self.flash_config.drop_threshold else Colors.GREEN if down_delta > 0 else ""
+        up_delta_str = f"{up_delta_color}{up_delta:+.4f}{Colors.RESET}" if up_old else "  n/a "
+        down_delta_str = f"{down_delta_color}{down_delta:+.4f}{Colors.RESET}" if down_old else "  n/a "
+
         lines.append(
-            f"History: UP={up_history}/100 DOWN={down_history}/100 | "
-            f"Drop threshold: {self.flash_config.drop_threshold:.2f} in {self.config.price_lookback_seconds}s"
+            f"Delta({lookback}s): UP={up_delta_str}  DOWN={down_delta_str} | "
+            f"Threshold: {self.flash_config.drop_threshold:.2f}"
         )
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")

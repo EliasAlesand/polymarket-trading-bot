@@ -42,14 +42,14 @@ def main():
     parser.add_argument(
         "--coin",
         type=str,
-        default="ETH",
+        default="BTC",
         choices=["BTC", "ETH", "SOL", "XRP"],
-        help="Coin to trade (default: ETH)"
+        help="Coin to trade (default: BTC)"
     )
     parser.add_argument(
         "--size",
         type=float,
-        default=5.0,
+        default=1.0,
         help="Trade size in USDC (default: 5.0)"
     )
     parser.add_argument(
