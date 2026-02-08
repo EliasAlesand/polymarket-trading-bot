@@ -32,8 +32,11 @@ import hmac
 import hashlib
 import base64
 import json
+import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 import requests
 
@@ -162,6 +165,8 @@ class ApiClient(ThreadLocalSessionMixin):
                 else:
                     raise ApiError(f"Unsupported method: {method}")
 
+                if not response.ok:
+                    logger.error(f"{method} {endpoint} -> {response.status_code}: {response.text[:500]}")
                 response.raise_for_status()
                 return response.json() if response.text else {}
 
@@ -486,6 +491,46 @@ class ClobClient(ApiClient):
             return result.get("data", [])
         return result if isinstance(result, list) else []
 
+    def get_tick_size(self, token_id: str) -> str:
+        """
+        Get the tick size for a token.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Tick size as string (e.g., "0.01", "0.001")
+        """
+        try:
+            result = self._request(
+                "GET",
+                "/tick-size",
+                params={"token_id": token_id}
+            )
+            return str(result.get("minimum_tick_size", "0.01"))
+        except Exception:
+            return "0.01"
+
+    def get_neg_risk(self, token_id: str) -> bool:
+        """
+        Check if a token uses the neg_risk exchange.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            True if the market uses neg_risk exchange
+        """
+        try:
+            result = self._request(
+                "GET",
+                "/neg-risk",
+                params={"token_id": token_id}
+            )
+            return result.get("neg_risk", False)
+        except Exception:
+            return False
+
     def post_order(
         self,
         signed_order: Dict[str, Any],
@@ -495,7 +540,7 @@ class ClobClient(ApiClient):
         Submit a signed order.
 
         Args:
-            signed_order: Order with signature
+            signed_order: Order with signature (signature inside order dict)
             order_type: Order type (GTC, GTD, FOK)
 
         Returns:
@@ -503,18 +548,18 @@ class ClobClient(ApiClient):
         """
         endpoint = "/order"
 
-        # Build request body
+        # Owner must be the L2 API key, not the funder address
+        owner = self.api_creds.api_key if self.api_creds else self.funder
+
+        # Build request body (signature is already inside order dict)
         body = {
             "order": signed_order.get("order", signed_order),
-            "owner": self.funder,
+            "owner": owner,
             "orderType": order_type,
         }
 
-        # Add signature
-        if "signature" in signed_order:
-            body["signature"] = signed_order["signature"]
-
         body_json = json.dumps(body, separators=(',', ':'))
+        logger.info(f"POST /order body: {body_json}")
         headers = self._build_headers("POST", endpoint, body_json)
 
         return self._request(

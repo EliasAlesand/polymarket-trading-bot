@@ -77,13 +77,17 @@ class TestOrderSigner:
         )
 
         assert "order" in result
-        assert "signature" in result
-        assert "signer" in result
+        # Signature is inside order dict (official format)
+        assert "signature" in result["order"]
 
         assert result["order"]["tokenId"] == "1234567890123456789"
-        assert result["order"]["price"] == 0.65
-        assert result["order"]["size"] == 10.0
         assert result["order"]["side"] == "BUY"
+        assert "maker" in result["order"]
+        assert "signer" in result["order"]
+        assert "makerAmount" in result["order"]
+        assert "takerAmount" in result["order"]
+        # Salt should be an integer, not string
+        assert isinstance(result["order"]["salt"], int)
 
     def test_sign_order_dict_sell_side(self):
         """Test signing SELL order."""
@@ -108,7 +112,7 @@ class TestOrderSigner:
             nonce=12345
         )
 
-        assert result["order"]["nonce"] == 12345
+        assert result["order"]["nonce"] == "12345"
 
     def test_sign_order_with_fee(self):
         """Test signing order with fee rate."""
@@ -121,7 +125,7 @@ class TestOrderSigner:
             fee_rate_bps=100  # 1%
         )
 
-        assert result["order"]["feeRateBps"] == 100
+        assert result["order"]["feeRateBps"] == "100"
 
     def test_sign_order_generates_valid_signature(self):
         """Test that signature is valid format."""
@@ -133,7 +137,8 @@ class TestOrderSigner:
             maker=self.test_address
         )
 
-        signature = result["signature"]
+        # Signature is inside the order dict
+        signature = result["order"]["signature"]
 
         assert signature.startswith("0x")
         assert len(signature) == 132  # 65 bytes hex encoded

@@ -312,7 +312,15 @@ class TradingBot:
         signer = self.require_signer()
 
         try:
-            # Create order
+            # Check market properties for correct signing and rounding
+            neg_risk = await self._run_in_thread(
+                self.clob_client.get_neg_risk, token_id
+            )
+            tick_size = await self._run_in_thread(
+                self.clob_client.get_tick_size, token_id
+            )
+
+            # Create order with proper rounding
             order = Order(
                 token_id=token_id,
                 price=price,
@@ -320,10 +328,11 @@ class TradingBot:
                 side=side,
                 maker=self.config.safe_address,
                 fee_rate_bps=fee_rate_bps,
+                tick_size=tick_size,
             )
 
-            # Sign order
-            signed = signer.sign_order(order)
+            # Sign order with correct exchange domain
+            signed = signer.sign_order(order, neg_risk=neg_risk)
 
             # Submit to CLOB
             response = await self._run_in_thread(

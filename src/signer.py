@@ -22,8 +22,12 @@ Example:
 """
 
 import time
+import random
+from math import floor, ceil
+from decimal import Decimal
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
@@ -31,6 +35,49 @@ from eth_utils import to_checksum_address
 
 # USDC has 6 decimal places
 USDC_DECIMALS = 6
+
+# Polymarket CTF Exchange addresses on Polygon (chain 137)
+EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
+
+def generate_seed() -> int:
+    """Pseudo-random seed for order salt (matches official py-order-utils)."""
+    now = datetime.now().replace(tzinfo=timezone.utc).timestamp()
+    return round(now * random.random())
+
+
+# Rounding helpers matching official py-clob-client
+def _round_down(x: float, decimals: int) -> float:
+    return floor(x * (10 ** decimals)) / (10 ** decimals)
+
+
+def _round_normal(x: float, decimals: int) -> float:
+    return round(x * (10 ** decimals)) / (10 ** decimals)
+
+
+def _round_up(x: float, decimals: int) -> float:
+    return ceil(x * (10 ** decimals)) / (10 ** decimals)
+
+
+def _decimal_places(x: float) -> int:
+    return abs(Decimal(str(x)).as_tuple().exponent)
+
+
+def _to_token_decimals(x: float) -> int:
+    f = (10 ** USDC_DECIMALS) * x
+    if _decimal_places(f) > 0:
+        f = _round_normal(f, 0)
+    return int(f)
+
+
+# Rounding configs per tick size: (price_decimals, size_decimals, amount_decimals)
+ROUNDING_CONFIG = {
+    "0.1": (1, 2, 3),
+    "0.01": (2, 2, 4),
+    "0.001": (3, 2, 5),
+    "0.0001": (4, 2, 6),
+}
 
 
 @dataclass
@@ -47,6 +94,7 @@ class Order:
         nonce: Unique order nonce (usually timestamp)
         fee_rate_bps: Fee rate in basis points (usually 0)
         signature_type: Signature type (2 = Gnosis Safe)
+        tick_size: Market tick size for rounding (default "0.01")
     """
     token_id: str
     price: float
@@ -56,6 +104,7 @@ class Order:
     nonce: Optional[int] = None
     fee_rate_bps: int = 0
     signature_type: int = 2
+    tick_size: str = "0.01"
 
     def __post_init__(self):
         """Validate and normalize order parameters."""
@@ -72,9 +121,31 @@ class Order:
         if self.nonce is None:
             self.nonce = int(time.time())
 
-        # Convert to integers for blockchain
-        self.maker_amount = str(int(self.size * self.price * 10**USDC_DECIMALS))
-        self.taker_amount = str(int(self.size * 10**USDC_DECIMALS))
+        # Get rounding config for this tick size
+        price_dec, size_dec, amount_dec = ROUNDING_CONFIG.get(
+            self.tick_size, (2, 2, 4)
+        )
+
+        # Round price and size per official client logic
+        raw_price = _round_normal(self.price, price_dec)
+
+        if self.side == "BUY":
+            raw_taker = _round_down(self.size, size_dec)
+            raw_maker = raw_taker * raw_price
+            if _decimal_places(raw_maker) > amount_dec:
+                raw_maker = _round_up(raw_maker, amount_dec + 4)
+                if _decimal_places(raw_maker) > amount_dec:
+                    raw_maker = _round_down(raw_maker, amount_dec)
+        else:
+            raw_maker = _round_down(self.size, size_dec)
+            raw_taker = raw_maker * raw_price
+            if _decimal_places(raw_taker) > amount_dec:
+                raw_taker = _round_up(raw_taker, amount_dec + 4)
+                if _decimal_places(raw_taker) > amount_dec:
+                    raw_taker = _round_down(raw_taker, amount_dec)
+
+        self.maker_amount = str(_to_token_decimals(raw_maker))
+        self.taker_amount = str(_to_token_decimals(raw_taker))
         self.side_value = 0 if self.side == "BUY" else 1
 
 
@@ -213,23 +284,26 @@ class OrderSigner:
         signed = self.wallet.sign_message(signable)
         return "0x" + signed.signature.hex()
 
-    def sign_order(self, order: Order) -> Dict[str, Any]:
+    def sign_order(self, order: Order, neg_risk: bool = False) -> Dict[str, Any]:
         """
         Sign a Polymarket order.
 
         Args:
             order: Order instance to sign
+            neg_risk: Whether the market uses neg_risk exchange
 
         Returns:
-            Dictionary containing order and signature
+            Dictionary containing order (with signature inside) for POST /order
 
         Raises:
             SignerError: If signing fails
         """
         try:
+            salt = generate_seed()
+
             # Build order message for EIP-712
             order_message = {
-                "salt": 0,
+                "salt": salt,
                 "maker": to_checksum_address(order.maker),
                 "signer": self.address,
                 "taker": "0x0000000000000000000000000000000000000000",
@@ -243,28 +317,42 @@ class OrderSigner:
                 "signatureType": order.signature_type,
             }
 
-            # Sign the order using new API format
+            # Order domain uses exchange contract, NOT ClobAuthDomain
+            exchange = NEG_RISK_EXCHANGE_ADDRESS if neg_risk else EXCHANGE_ADDRESS
+            order_domain = {
+                "name": "Polymarket CTF Exchange",
+                "version": "1",
+                "chainId": 137,
+                "verifyingContract": exchange,
+            }
+
             signable = encode_typed_data(
-                domain_data=self.DOMAIN,
+                domain_data=order_domain,
                 message_types=self.ORDER_TYPES,
                 message_data=order_message
             )
 
             signed = self.wallet.sign_message(signable)
 
+            # Return format matching official py-clob-client:
+            # - signature goes INSIDE order dict
+            # - salt is int, amounts/nonce/expiration/feeRateBps are strings
             return {
                 "order": {
-                    "tokenId": order.token_id,
-                    "price": order.price,
-                    "size": order.size,
+                    "salt": salt,
+                    "maker": order_message["maker"],
+                    "signer": order_message["signer"],
+                    "taker": order_message["taker"],
+                    "tokenId": str(order.token_id),
+                    "makerAmount": order.maker_amount,
+                    "takerAmount": order.taker_amount,
+                    "expiration": "0",
+                    "nonce": str(order.nonce),
+                    "feeRateBps": str(order.fee_rate_bps),
                     "side": order.side,
-                    "maker": order.maker,
-                    "nonce": order.nonce,
-                    "feeRateBps": order.fee_rate_bps,
                     "signatureType": order.signature_type,
+                    "signature": "0x" + signed.signature.hex(),
                 },
-                "signature": "0x" + signed.signature.hex(),
-                "signer": self.address,
             }
 
         except Exception as e:
