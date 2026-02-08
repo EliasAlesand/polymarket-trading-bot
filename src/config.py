@@ -167,7 +167,11 @@ class Config:
     def __post_init__(self):
         """Validate and normalize configuration."""
         if self.safe_address:
-            self.safe_address = self.safe_address.lower()
+            from eth_utils import to_checksum_address
+            try:
+                self.safe_address = to_checksum_address(self.safe_address)
+            except ValueError:
+                self.safe_address = self.safe_address
         # Auto-enable gasless if builder is configured
         if self.builder.is_configured():
             self.use_gasless = True

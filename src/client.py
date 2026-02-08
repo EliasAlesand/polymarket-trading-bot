@@ -196,6 +196,7 @@ class ClobClient(ApiClient):
         chain_id: int = 137,
         signature_type: int = 2,
         funder: str = "",
+        signer_address: str = "",
         api_creds: Optional[ApiCredentials] = None,
         builder_creds: Optional[BuilderConfig] = None,
         timeout: int = 30
@@ -207,7 +208,8 @@ class ClobClient(ApiClient):
             host: CLOB API host
             chain_id: Chain ID (137 for Polygon mainnet)
             signature_type: Signature type (2 = Gnosis Safe)
-            funder: Funder/Safe address
+            funder: Funder/Safe address (used as order maker)
+            signer_address: EOA signer address (used for POLY_ADDRESS auth header)
             api_creds: User API credentials (optional)
             builder_creds: Builder credentials for attribution (optional)
             timeout: Request timeout
@@ -217,6 +219,7 @@ class ClobClient(ApiClient):
         self.chain_id = chain_id
         self.signature_type = signature_type
         self.funder = funder
+        self.signer_address = signer_address
         self.api_creds = api_creds
         self.builder_creds = builder_creds
 
@@ -282,7 +285,7 @@ class ClobClient(ApiClient):
                 ).hexdigest()
 
             headers.update({
-                "POLY_ADDRESS": self.funder,
+                "POLY_ADDRESS": self.signer_address or self.funder,
                 "POLY_API_KEY": self.api_creds.api_key,
                 "POLY_TIMESTAMP": timestamp,
                 "POLY_PASSPHRASE": self.api_creds.passphrase,

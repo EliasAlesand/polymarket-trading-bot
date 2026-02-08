@@ -251,6 +251,7 @@ class TradingBot:
             chain_id=self.config.clob.chain_id,
             signature_type=self.config.clob.signature_type,
             funder=self.config.safe_address,
+            signer_address=self.signer.address if self.signer else "",
             api_creds=self._api_creds,
             builder_creds=self.config.builder if self.config.use_gasless else None,
         )
