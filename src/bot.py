@@ -479,7 +479,7 @@ class TradingBot:
         order_id: str,
         timeout: float = 15.0,
         poll_interval: float = 1.0
-    ) -> bool:
+    ) -> float:
         """
         Poll order status until matched/filled or timeout.
 
@@ -489,7 +489,7 @@ class TradingBot:
             poll_interval: Seconds between polls
 
         Returns:
-            True if order was matched/filled
+            Filled size (float), or 0.0 if not filled
         """
         import time
         start = time.time()
@@ -499,18 +499,75 @@ class TradingBot:
                 size_matched = order_data.get("size_matched", "0")
                 original_size = order_data.get("original_size", "0")
                 try:
-                    if float(size_matched) > 0:
+                    matched = float(size_matched)
+                    if matched > 0:
                         logger.info(
                             f"Order {order_id} filled: "
                             f"{size_matched}/{original_size}"
                         )
-                        return True
+                        return matched
                 except (ValueError, TypeError):
                     pass
             await asyncio.sleep(poll_interval)
 
         logger.warning(f"Order {order_id} not filled within {timeout}s")
-        return False
+        return 0.0
+
+    async def get_filled_size(self, order_id: str) -> float:
+        """
+        Get the filled size for an order.
+
+        Args:
+            order_id: Order ID
+
+        Returns:
+            Filled size as float, or 0.0
+        """
+        order_data = await self.get_order(order_id)
+        if order_data:
+            try:
+                return float(order_data.get("size_matched", "0"))
+            except (ValueError, TypeError):
+                pass
+        return 0.0
+
+    async def get_token_balance(self, token_id: str) -> float:
+        """
+        Get actual on-chain ERC-1155 token balance for the Safe wallet.
+
+        This is the ground truth for how many shares can be sold.
+        The CLOB's size_matched can differ due to fees/settlement.
+
+        Args:
+            token_id: The ERC-1155 token ID
+
+        Returns:
+            Balance in shares (float), or 0.0
+        """
+        try:
+            from web3 import Web3
+            import os
+
+            rpc = os.environ.get("POLY_RPC_URL", "https://polygon-rpc.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+
+            CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+            abi = [{"name": "balanceOf", "type": "function",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "owner", "type": "address"},
+                               {"name": "id", "type": "uint256"}],
+                    "outputs": [{"name": "", "type": "uint256"}]}]
+
+            ctf = w3.eth.contract(address=CTF, abi=abi)
+            balance = await self._run_in_thread(
+                ctf.functions.balanceOf(
+                    self.config.safe_address, int(token_id)
+                ).call
+            )
+            return balance / 1e6
+        except Exception as e:
+            logger.error(f"Failed to get token balance: {e}")
+            return 0.0
 
     async def get_open_orders(self) -> List[Dict[str, Any]]:
         """
@@ -618,6 +675,107 @@ class TradingBot:
             return True
         except Exception as e:
             logger.warning(f"Safe deployment failed (may already be deployed): {e}")
+            return False
+
+    def _get_official_relay_client(self):
+        """
+        Create an official RelayClient from py_builder_relayer_client.
+
+        Returns the client or None if requirements aren't met.
+        """
+        if not self.signer or not self.config.builder or not self.config.builder.is_configured():
+            return None
+
+        try:
+            from py_builder_relayer_client.client import RelayClient
+            from py_builder_signing_sdk.config import BuilderConfig as OfficialBuilderConfig
+            from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+
+            creds = BuilderApiKeyCreds(
+                key=self.config.builder.api_key,
+                secret=self.config.builder.api_secret,
+                passphrase=self.config.builder.api_passphrase,
+            )
+            builder_config = OfficialBuilderConfig(local_builder_creds=creds)
+
+            # Get private key from signer
+            private_key = self.signer.wallet.key.hex()
+
+            return RelayClient(
+                relayer_url="https://relayer-v2.polymarket.com",
+                chain_id=self.config.clob.chain_id,
+                private_key=private_key,
+                builder_config=builder_config,
+            )
+        except ImportError:
+            logger.warning("py-builder-relayer-client not installed")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to create RelayClient: {e}")
+            return None
+
+    async def setup_trading_approvals(self) -> bool:
+        """
+        Set up ERC-1155 token approvals for trading (one-time setup).
+
+        Calls setApprovalForAll on the CTF contract for the exchange
+        addresses so that sell orders can transfer outcome tokens.
+
+        Returns:
+            True if approvals were set up successfully
+        """
+        relay_client = await self._run_in_thread(self._get_official_relay_client)
+        if not relay_client:
+            logger.warning("Cannot set up approvals: RelayClient not available")
+            return False
+
+        try:
+            from py_builder_relayer_client.models import SafeTransaction, OperationType
+            from web3 import Web3
+
+            CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+            EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+            NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+            NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+
+            abi = [{"name": "setApprovalForAll", "type": "function",
+                    "inputs": [{"name": "operator", "type": "address"},
+                               {"name": "approved", "type": "bool"}],
+                    "outputs": []}]
+            contract = Web3().eth.contract(address=CTF, abi=abi)
+
+            spenders = [EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
+            transactions = []
+            for spender in spenders:
+                data = contract.encode_abi("setApprovalForAll", [spender, True])
+                transactions.append(SafeTransaction(
+                    to=CTF,
+                    operation=OperationType.Call,
+                    data=data,
+                    value="0",
+                ))
+
+            logger.info("Setting up ERC-1155 token approvals for trading...")
+            response = await self._run_in_thread(
+                relay_client.execute, transactions, "Approve outcome tokens for trading"
+            )
+
+            logger.info(
+                f"Approval transaction submitted: {response.transaction_id}"
+            )
+
+            # Wait for on-chain confirmation
+            result = await self._run_in_thread(response.wait)
+
+            if result:
+                logger.info("Trading approvals confirmed on-chain")
+                return True
+            else:
+                logger.warning("Approval transaction may have failed")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to set up trading approvals: {e}")
             return False
 
     def create_order_dict(

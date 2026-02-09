@@ -172,7 +172,7 @@ class FlashCrashStrategy(BaseStrategy):
                 lines.append(
                     f"  {Colors.BOLD}{pos.side.upper():4}{Colors.RESET} "
                     f"Entry: {pos.entry_price:.4f} | Current: {current:.4f} | "
-                    f"Size: ${pos.size:.2f} | PnL: {color}${pnl:+.2f} ({pnl_pct:+.1f}%){Colors.RESET} | "
+                    f"Size: {pos.size:.2f} shares (${pos.size * pos.entry_price:.2f}) | PnL: {color}${pnl:+.2f} ({pnl_pct:+.1f}%){Colors.RESET} | "
                     f"Hold: {hold_time:.0f}s"
                 )
                 lines.append(

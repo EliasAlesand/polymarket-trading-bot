@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(pip show:*)",
+      "Bash(python:*)"
     ]
   }
 }
