@@ -67,14 +67,20 @@ def main():
     parser.add_argument(
         "--take-profit",
         type=float,
-        default=0.10,
-        help="Take profit in dollars (default: 0.10)"
+        default=0.30,
+        help="Take profit as percentage, e.g. 0.30 = 30%% (default: 0.30)"
     )
     parser.add_argument(
         "--stop-loss",
         type=float,
-        default=0.05,
-        help="Stop loss in dollars (default: 0.05)"
+        default=0.25,
+        help="Stop loss as percentage, e.g. 0.25 = 25%% (default: 0.25)"
+    )
+    parser.add_argument(
+        "--exit-before",
+        type=int,
+        default=120,
+        help="Exit positions N seconds before market expiry (default: 120)"
     )
     parser.add_argument(
         "--debug",
@@ -114,6 +120,7 @@ def main():
         price_lookback_seconds=args.lookback,
         take_profit=args.take_profit,
         stop_loss=args.stop_loss,
+        exit_before_expiry=args.exit_before,
     )
 
     # Print configuration
@@ -126,8 +133,9 @@ def main():
     print(f"  Size: ${strategy_config.size:.2f}")
     print(f"  Drop threshold: {strategy_config.drop_threshold:.2f}")
     print(f"  Lookback: {strategy_config.price_lookback_seconds}s")
-    print(f"  Take profit: +${strategy_config.take_profit:.2f}")
-    print(f"  Stop loss: -${strategy_config.stop_loss:.2f}")
+    print(f"  Take profit: +{strategy_config.take_profit*100:.0f}%")
+    print(f"  Stop loss: -{strategy_config.stop_loss*100:.0f}%")
+    print(f"  Exit before expiry: {strategy_config.exit_before_expiry}s")
     print()
 
     # Create and run strategy

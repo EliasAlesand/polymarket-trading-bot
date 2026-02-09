@@ -10,7 +10,7 @@ Provides:
 Usage:
     from lib import PositionManager, Position
 
-    manager = PositionManager(take_profit=0.10, stop_loss=0.05)
+    manager = PositionManager(take_profit=0.20, stop_loss=0.10)  # 20% TP, 10% SL
 
     # Open position
     pos = manager.open_position(
@@ -47,19 +47,19 @@ class Position:
     entry_time: float
     order_id: Optional[str] = None
 
-    # TP/SL config (set by PositionManager)
-    take_profit_delta: float = 0.10
-    stop_loss_delta: float = 0.05
+    # TP/SL config as percentages (set by PositionManager)
+    take_profit_pct: float = 0.30  # 30% gain
+    stop_loss_pct: float = 0.25  # 25% loss
 
     @property
     def take_profit_price(self) -> float:
         """Target price for take profit."""
-        return self.entry_price + self.take_profit_delta
+        return self.entry_price * (1 + self.take_profit_pct)
 
     @property
     def stop_loss_price(self) -> float:
         """Target price for stop loss."""
-        return self.entry_price - self.stop_loss_delta
+        return self.entry_price * (1 - self.stop_loss_pct)
 
     def get_pnl(self, current_price: float) -> float:
         """Calculate unrealized PnL."""
@@ -95,8 +95,8 @@ class PositionManager:
     - Trade statistics
     """
 
-    take_profit: float = 0.10  # +10 cents
-    stop_loss: float = 0.05  # -5 cents
+    take_profit: float = 0.30  # 30% gain
+    stop_loss: float = 0.25  # 25% loss
     max_positions: int = 1  # Max concurrent positions
 
     # State
@@ -171,8 +171,8 @@ class PositionManager:
             size=size,
             entry_time=time.time(),
             order_id=order_id,
-            take_profit_delta=self.take_profit,
-            stop_loss_delta=self.stop_loss,
+            take_profit_pct=self.take_profit,
+            stop_loss_pct=self.stop_loss,
         )
 
         self._positions[pos_id] = position

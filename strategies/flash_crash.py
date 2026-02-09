@@ -34,6 +34,7 @@ class FlashCrashConfig(StrategyConfig):
     """Flash crash strategy configuration."""
 
     drop_threshold: float = 0.30  # Absolute probability drop
+    exit_before_expiry: int = 120  # Seconds before expiry to force-exit positions
 
 
 class FlashCrashStrategy(BaseStrategy):
@@ -58,8 +59,19 @@ class FlashCrashStrategy(BaseStrategy):
 
     async def on_tick(self, prices: Dict[str, float]) -> None:
         """Check for flash crash on each tick."""
+        # Check time-based exit before anything else
+        await self._check_expiry_exit(prices)
+
         if not self.positions.can_open_position:
             return
+
+        # Don't open new positions too close to expiry
+        market = self.current_market
+        if market:
+            mins, secs = market.get_countdown()
+            remaining = mins * 60 + secs if mins >= 0 else 999
+            if remaining <= self.flash_config.exit_before_expiry:
+                return
 
         # Detect flash crash
         event = self.prices.detect_flash_crash()
@@ -72,6 +84,33 @@ class FlashCrashStrategy(BaseStrategy):
             current_price = prices.get(event.side, 0)
             if current_price > 0:
                 await self.execute_buy(event.side, current_price)
+
+    async def _check_expiry_exit(self, prices: Dict[str, float]) -> None:
+        """Force-exit all positions if market is about to expire."""
+        market = self.current_market
+        if not market:
+            return
+
+        mins, secs = market.get_countdown()
+        if mins < 0:
+            return
+
+        remaining = mins * 60 + secs
+        if remaining > self.flash_config.exit_before_expiry:
+            return
+
+        # Close all open positions
+        for pos in self.positions.get_all_positions():
+            current = prices.get(pos.side, 0)
+            if current <= 0:
+                continue
+            pnl = pos.get_pnl(current)
+            self.log(
+                f"EXPIRY EXIT: {pos.side.upper()} "
+                f"({remaining}s left) PnL: ${pnl:+.2f}",
+                "warning"
+            )
+            await self.execute_sell(pos, current)
 
     def render_status(self, prices: Dict[str, float]) -> None:
         """Render TUI status display."""
@@ -176,8 +215,8 @@ class FlashCrashStrategy(BaseStrategy):
                     f"Hold: {hold_time:.0f}s"
                 )
                 lines.append(
-                    f"       TP: {pos.take_profit_price:.4f} (+${self.config.take_profit:.2f}) | "
-                    f"SL: {pos.stop_loss_price:.4f} (-${self.config.stop_loss:.2f})"
+                    f"       TP: {pos.take_profit_price:.4f} (+{self.config.take_profit*100:.0f}%) | "
+                    f"SL: {pos.stop_loss_price:.4f} (-{self.config.stop_loss*100:.0f}%)"
                 )
         else:
             lines.append(f"  {Colors.CYAN}(no open positions){Colors.RESET}")

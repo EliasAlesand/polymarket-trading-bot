@@ -41,8 +41,8 @@ class StrategyConfig:
     coin: str = "ETH"
     size: float = 5.0  # USDC size per trade
     max_positions: int = 1
-    take_profit: float = 0.10
-    stop_loss: float = 0.05
+    take_profit: float = 0.30  # 30% gain
+    stop_loss: float = 0.25  # 25% loss
 
     # Market settings
     market_check_interval: float = 30.0
