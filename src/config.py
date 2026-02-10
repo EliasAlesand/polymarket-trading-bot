@@ -171,7 +171,7 @@ class Config:
             try:
                 self.safe_address = to_checksum_address(self.safe_address)
             except ValueError:
-                self.safe_address = self.safe_address
+                pass
         # Auto-enable gasless if builder is configured
         if self.builder.is_configured():
             self.use_gasless = True
@@ -330,58 +330,6 @@ class Config:
 
         return config
 
-    @classmethod
-    def load_with_env(cls, filepath: str = "config.yaml") -> "Config":
-        """
-        Load configuration from YAML file with environment variable overrides.
-
-        Args:
-            filepath: Path to YAML config file
-
-        Returns:
-            Config instance with env vars taking precedence
-        """
-        # Start with YAML config if it exists
-        path = Path(filepath)
-        if path.exists():
-            config = cls.load(filepath)
-        else:
-            config = cls()
-
-        # Override with environment variables
-        safe_address = get_env("SAFE_ADDRESS")
-        if safe_address:
-            config.safe_address = safe_address.lower()
-
-        rpc_url = get_env("RPC_URL")
-        if rpc_url:
-            config.rpc_url = rpc_url
-
-        # Builder credentials from env override YAML
-        api_key = get_env("BUILDER_API_KEY")
-        api_secret = get_env("BUILDER_API_SECRET")
-        api_passphrase = get_env("BUILDER_API_PASSPHRASE")
-        if api_key:
-            config.builder.api_key = api_key
-        if api_secret:
-            config.builder.api_secret = api_secret
-        if api_passphrase:
-            config.builder.api_passphrase = api_passphrase
-
-        # Other settings
-        data_dir = get_env("DATA_DIR")
-        if data_dir:
-            config.data_dir = data_dir
-
-        log_level = get_env("LOG_LEVEL")
-        if log_level:
-            config.log_level = log_level.upper()
-
-        # Re-check gasless mode
-        config.use_gasless = config.builder.is_configured()
-
-        return config
-
     def save(self, filepath: str = "config.yaml") -> None:
         """Save configuration to YAML file."""
         data = self.to_dict()
@@ -428,18 +376,6 @@ class Config:
             errors.append("gasless mode enabled but builder credentials not configured")
 
         return errors
-
-    def get_credential_path(self, name: str) -> Path:
-        """Get path for credential file."""
-        return Path(self.data_dir) / name
-
-    def get_encrypted_key_path(self) -> Path:
-        """Get path for encrypted private key file."""
-        return self.get_credential_path("encrypted_key.json")
-
-    def get_api_creds_path(self) -> Path:
-        """Get path for API credentials file."""
-        return self.get_credential_path("api_creds.json")
 
     def __repr__(self) -> str:
         """String representation."""

@@ -146,7 +146,8 @@ class BaseStrategy(ABC):
                 return loop.run_until_complete(self.bot.get_open_orders())
             finally:
                 loop.close()
-        except Exception:
+        except Exception as e:
+            log(f"Order refresh failed: {e}", "warning")
             return []
 
     async def _do_order_refresh(self) -> None:
@@ -154,8 +155,8 @@ class BaseStrategy(ABC):
         try:
             orders = await asyncio.to_thread(self._refresh_orders_sync)
             self._cached_orders = orders
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Background order refresh failed: {e}", "warning")
         finally:
             self._order_refresh_task = None
 

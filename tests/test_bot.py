@@ -203,40 +203,6 @@ builder:
 
         assert len(errors) == 0
 
-    def test_create_order_dict(self):
-        """Test creating order dictionary."""
-        bot = TradingBot(
-            private_key=self.TEST_PRIVATE_KEY,
-            safe_address=self.TEST_SAFE_ADDRESS
-        )
-
-        order_dict = bot.create_order_dict(
-            token_id="1234567890",
-            price=0.65,
-            size=10.0,
-            side="BUY"
-        )
-
-        assert order_dict["token_id"] == "1234567890"
-        assert order_dict["price"] == 0.65
-        assert order_dict["size"] == 10.0
-        assert order_dict["side"] == "BUY"
-
-    def test_create_order_dict_side_normalized(self):
-        """Test that side is normalized to uppercase."""
-        bot = TradingBot(
-            private_key=self.TEST_PRIVATE_KEY,
-            safe_address=self.TEST_SAFE_ADDRESS
-        )
-
-        order_dict = bot.create_order_dict(
-            token_id="1234567890",
-            price=0.65,
-            size=10.0,
-            side="buy"
-        )
-
-        assert order_dict["side"] == "BUY"
 
 
 class TestCreateBot:

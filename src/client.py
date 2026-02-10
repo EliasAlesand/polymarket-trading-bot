@@ -384,7 +384,8 @@ class ClobClient(ApiClient):
         """
         try:
             return self.create_api_key(signer, nonce)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"create_api_key failed ({e}), falling back to derive_api_key")
             return self.derive_api_key(signer, nonce)
 
     def set_api_creds(self, creds: ApiCredentials) -> None:
@@ -509,7 +510,8 @@ class ClobClient(ApiClient):
                 params={"token_id": token_id}
             )
             return result.get("base_fee") or 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get fee rate: {e}")
             return 0
 
     def get_tick_size(self, token_id: str) -> str:
@@ -529,7 +531,8 @@ class ClobClient(ApiClient):
                 params={"token_id": token_id}
             )
             return str(result.get("minimum_tick_size", "0.01"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get tick size: {e}")
             return "0.01"
 
     def get_neg_risk(self, token_id: str) -> bool:
@@ -549,7 +552,8 @@ class ClobClient(ApiClient):
                 params={"token_id": token_id}
             )
             return result.get("neg_risk", False)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get neg_risk status: {e}")
             return False
 
     def post_order(
@@ -769,71 +773,3 @@ class RelayerClient(ApiClient):
             headers=headers
         )
 
-    def approve_usdc(
-        self,
-        safe_address: str,
-        spender: str,
-        amount: int
-    ) -> Dict[str, Any]:
-        """
-        Approve USDC spending.
-
-        Args:
-            safe_address: Safe address
-            spender: Spender address
-            amount: Amount to approve
-
-        Returns:
-            Approval transaction response
-        """
-        endpoint = "/approve-usdc"
-        body = {
-            "safeAddress": safe_address,
-            "spender": spender,
-            "amount": str(amount),
-        }
-        body_json = json.dumps(body, separators=(',', ':'))
-        headers = self._build_headers("POST", endpoint, body_json)
-
-        return self._request(
-            "POST",
-            endpoint,
-            data=body,
-            headers=headers
-        )
-
-    def approve_token(
-        self,
-        safe_address: str,
-        token_id: str,
-        spender: str,
-        amount: int
-    ) -> Dict[str, Any]:
-        """
-        Approve an ERC-1155 token.
-
-        Args:
-            safe_address: Safe address
-            token_id: Token ID
-            spender: Spender address
-            amount: Amount to approve
-
-        Returns:
-            Approval transaction response
-        """
-        endpoint = "/approve-token"
-        body = {
-            "safeAddress": safe_address,
-            "tokenId": token_id,
-            "spender": spender,
-            "amount": str(amount),
-        }
-        body_json = json.dumps(body, separators=(',', ':'))
-        headers = self._build_headers("POST", endpoint, body_json)
-
-        return self._request(
-            "POST",
-            endpoint,
-            data=body,
-            headers=headers
-        )

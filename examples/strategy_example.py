@@ -66,14 +66,6 @@ class OrderInfo:
     placed_at: datetime = field(default_factory=datetime.now)
 
 
-class StrategyEvent:
-    """Strategy lifecycle events."""
-    def __init__(self, event_type: str, data: Dict[str, Any]):
-        self.type = event_type
-        self.data = data
-        self.timestamp = datetime.now()
-
-
 class BaseStrategy(ABC):
     """
     Abstract base class for trading strategies.
