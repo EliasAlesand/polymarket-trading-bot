@@ -20,6 +20,7 @@ Usage:
     await strategy.run()
 """
 
+import argparse
 from dataclasses import dataclass
 from typing import Dict
 
@@ -37,6 +38,31 @@ class FlashCrashConfig(StrategyConfig):
     exit_before_expiry: int = 120  # Seconds before expiry to force-exit positions
     reverse: bool = False  # Momentum mode: buy opposite side of crash
 
+    @classmethod
+    def add_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add flash crash specific CLI arguments."""
+        super().add_args(parser)
+        parser.add_argument("--drop", type=float, default=0.30,
+                            help="Drop threshold as absolute probability change (default: 0.30)")
+        parser.add_argument("--exit-before", type=int, default=120,
+                            help="Exit positions N seconds before market expiry (default: 120)")
+        parser.add_argument("--reverse", action="store_true",
+                            help="Momentum mode: buy opposite side of crash")
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "FlashCrashConfig":
+        """Create config from parsed CLI args."""
+        return cls(
+            coin=args.coin.upper(),
+            size=args.size,
+            take_profit=args.take_profit,
+            stop_loss=args.stop_loss,
+            price_lookback_seconds=args.lookback,
+            drop_threshold=args.drop,
+            exit_before_expiry=args.exit_before,
+            reverse=args.reverse,
+        )
+
 
 class FlashCrashStrategy(BaseStrategy):
     """
@@ -45,6 +71,10 @@ class FlashCrashStrategy(BaseStrategy):
     Monitors 15-minute markets for sudden price drops and trades
     the volatility with defined take-profit and stop-loss levels.
     """
+
+    name = "flash_crash"
+    description = "Trade volatility on 15-minute markets by detecting sudden price drops"
+    config_class = FlashCrashConfig
 
     def __init__(self, bot: TradingBot, config: FlashCrashConfig):
         """Initialize flash crash strategy."""

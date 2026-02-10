@@ -6,11 +6,16 @@ Provides:
 - Common lifecycle methods (start, stop, run)
 - Integration with lib components (MarketManager, PriceTracker, PositionManager)
 - Logging and status display utilities
+- Strategy registry with auto-discovery via __init_subclass__
 
 Usage:
     from strategies.base import BaseStrategy, StrategyConfig
 
     class MyStrategy(BaseStrategy):
+        name = "my_strategy"
+        description = "My custom strategy"
+        config_class = MyConfig  # Must be a StrategyConfig subclass
+
         async def on_book_update(self, snapshot):
             # Handle orderbook updates
             pass
@@ -20,11 +25,12 @@ Usage:
             pass
 """
 
+import argparse
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional, Dict, List
+from dataclasses import dataclass, fields
+from typing import Optional, Dict, List, ClassVar, Type
 
 from lib.console import LogBuffer, log
 from lib.market_manager import MarketManager, MarketInfo
@@ -63,6 +69,34 @@ class StrategyConfig:
     update_interval: float = 0.1
     order_refresh_interval: float = 30.0  # Seconds between order refreshes
 
+    @classmethod
+    def add_args(cls, parser: argparse.ArgumentParser) -> None:
+        """Add common CLI arguments. Override to add strategy-specific args."""
+        parser.add_argument("--coin", type=str, default="BTC",
+                            choices=["BTC", "ETH", "SOL", "XRP"],
+                            help="Coin to trade (default: BTC)")
+        parser.add_argument("--size", type=float, default=1.0,
+                            help="Trade size in USDC (default: 1.0)")
+        parser.add_argument("--take-profit", type=float, default=0.30,
+                            help="Take profit percentage, e.g. 0.30 = 30%% (default: 0.30)")
+        parser.add_argument("--stop-loss", type=float, default=0.25,
+                            help="Stop loss percentage, e.g. 0.25 = 25%% (default: 0.25)")
+        parser.add_argument("--lookback", type=int, default=10,
+                            help="Price lookback window in seconds (default: 10)")
+        parser.add_argument("--debug", action="store_true",
+                            help="Enable debug logging")
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "StrategyConfig":
+        """Create config from parsed CLI args. Override for strategy-specific args."""
+        return cls(
+            coin=args.coin.upper(),
+            size=args.size,
+            take_profit=args.take_profit,
+            stop_loss=args.stop_loss,
+            price_lookback_seconds=args.lookback,
+        )
+
 
 class BaseStrategy(ABC):
     """
@@ -73,7 +107,27 @@ class BaseStrategy(ABC):
     - PriceTracker for price history
     - PositionManager for positions and TP/SL
     - Logging and status display
+
+    Subclasses set `name`, `description`, and `config_class` to auto-register:
+
+        class MyStrategy(BaseStrategy):
+            name = "my_strategy"
+            description = "My custom strategy"
+            config_class = MyConfig
     """
+
+    # Strategy registry - populated by __init_subclass__
+    REGISTRY: ClassVar[Dict[str, Type["BaseStrategy"]]] = {}
+
+    # Subclasses override these
+    name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    config_class: ClassVar[Type[StrategyConfig]] = StrategyConfig
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.name:
+            BaseStrategy.REGISTRY[cls.name] = cls
 
     def __init__(self, bot: TradingBot, config: StrategyConfig):
         """
