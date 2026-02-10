@@ -138,7 +138,9 @@ class FlashCrashStrategy(BaseStrategy):
         mode_str = f"{Colors.YELLOW}MOMENTUM{Colors.RESET}" if self.flash_config.reverse else "REVERT"
         lines.append(
             f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] [{mode_str}] "
-            f"Ends: {countdown} | Trades: {stats['trades_closed']} | PnL: ${stats['total_pnl']:+.2f}"
+            f"Ends: {countdown} | Trades: {stats['trades_closed']} "
+            f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
+            f"WR: {stats['win_rate']:.0f}% | PnL: ${stats['total_pnl']:+.2f}"
         )
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
