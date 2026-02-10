@@ -44,6 +44,13 @@ class StrategyConfig:
     take_profit: float = 0.30  # 30% gain
     stop_loss: float = 0.25  # 25% loss
 
+    def __post_init__(self):
+        # Auto-convert if user passed percentages as whole numbers (e.g. 25 instead of 0.25)
+        if self.take_profit > 1:
+            self.take_profit = self.take_profit / 100
+        if self.stop_loss > 1:
+            self.stop_loss = self.stop_loss / 100
+
     # Market settings
     market_check_interval: float = 30.0
     auto_switch_market: bool = True
@@ -319,8 +326,6 @@ class BaseStrategy(ABC):
         size = self.config.size / current_price
         buy_price = min(current_price + 0.02, 0.99)
 
-        self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f}", "trade")
-
         result = await self.bot.place_order(
             token_id=token_id,
             price=buy_price,
@@ -329,18 +334,12 @@ class BaseStrategy(ABC):
         )
 
         if not result.success:
-            self.log(f"Order failed: {result.message}", "error")
+            self.log(f"Buy failed: {result.message}", "error")
             return False
-
-        self.log(f"Order placed: {result.order_id}", "success")
 
         # Check if order was immediately matched
         status = result.data.get("status", "")
-        if status == "matched":
-            self.log("Order matched immediately", "success")
-        else:
-            # Order is live/delayed — wait for fill
-            self.log(f"Order status: {status}, waiting for fill...", "info")
+        if status != "matched":
             filled_size = await self.bot.wait_for_fill(result.order_id, timeout=15.0)
             if filled_size <= 0:
                 self.log("Order not filled, cancelling", "warning")
@@ -353,13 +352,9 @@ class BaseStrategy(ABC):
             actual_size = size  # fallback if API call fails
 
         if actual_size < size:
-            self.log(
-                f"Partial fill: {actual_size:.2f}/{size:.2f}, "
-                f"cancelling remainder",
-                "warning"
-            )
             await self.bot.cancel_order(result.order_id)
 
+        self.log(f"BUY {side.upper()} @ {current_price:.4f} x{actual_size:.2f}", "success")
         self.positions.open_position(
             side=side,
             token_id=token_id,
@@ -385,24 +380,12 @@ class BaseStrategy(ABC):
         # Use actual on-chain balance as the sell size (ground truth)
         on_chain_balance = await self.bot.get_token_balance(position.token_id)
         if on_chain_balance <= 0:
-            self.log(
-                f"No on-chain token balance for {position.token_id[:16]}..., "
-                f"cancelling position",
-                "warning"
-            )
             if position.order_id:
                 await self.bot.cancel_order(position.order_id)
             self.positions.close_position(position.id, realized_pnl=0)
             return False
 
         sell_size = on_chain_balance
-        if sell_size != position.size:
-            self.log(
-                f"Sell size adjusted to on-chain balance: "
-                f"{sell_size:.4f} (position tracked {position.size:.4f})",
-                "info"
-            )
-
         sell_price = max(current_price - 0.02, 0.01)
         pnl = (current_price - position.entry_price) * sell_size
 
@@ -417,7 +400,7 @@ class BaseStrategy(ABC):
             self.log(f"Sell failed: {result.message}", "error")
             return False
 
-        self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
+        self.log(f"SELL {position.side.upper()} @ {current_price:.4f} PnL: ${pnl:+.2f}", "success")
         self.positions.close_position(position.id, realized_pnl=pnl)
         return True
 

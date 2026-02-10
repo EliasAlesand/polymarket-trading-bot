@@ -83,6 +83,11 @@ def main():
         help="Exit positions N seconds before market expiry (default: 120)"
     )
     parser.add_argument(
+        "--reverse",
+        action="store_true",
+        help="Momentum mode: buy opposite side of crash instead of crashed side"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -121,6 +126,7 @@ def main():
         take_profit=args.take_profit,
         stop_loss=args.stop_loss,
         exit_before_expiry=args.exit_before,
+        reverse=args.reverse,
     )
 
     # Print configuration
@@ -136,6 +142,8 @@ def main():
     print(f"  Take profit: +{strategy_config.take_profit*100:.0f}%")
     print(f"  Stop loss: -{strategy_config.stop_loss*100:.0f}%")
     print(f"  Exit before expiry: {strategy_config.exit_before_expiry}s")
+    mode = "MOMENTUM (buy opposite)" if strategy_config.reverse else "MEAN REVERSION (buy crash)"
+    print(f"  Mode: {mode}")
     print()
 
     # Create and run strategy

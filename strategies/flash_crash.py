@@ -35,6 +35,7 @@ class FlashCrashConfig(StrategyConfig):
 
     drop_threshold: float = 0.30  # Absolute probability drop
     exit_before_expiry: int = 120  # Seconds before expiry to force-exit positions
+    reverse: bool = False  # Momentum mode: buy opposite side of crash
 
 
 class FlashCrashStrategy(BaseStrategy):
@@ -76,14 +77,26 @@ class FlashCrashStrategy(BaseStrategy):
         # Detect flash crash
         event = self.prices.detect_flash_crash()
         if event:
-            self.log(
-                f"FLASH CRASH: {event.side.upper()} "
-                f"drop {event.drop:.2f} ({event.old_price:.2f} -> {event.new_price:.2f})",
-                "trade"
-            )
-            current_price = prices.get(event.side, 0)
+            # In reverse (momentum) mode, buy the opposite side
+            if self.flash_config.reverse:
+                buy_side = "down" if event.side == "up" else "up"
+                self.log(
+                    f"MOMENTUM: {event.side.upper()} crashed "
+                    f"{event.drop:.2f} ({event.old_price:.2f} -> {event.new_price:.2f}) "
+                    f"-> BUY {buy_side.upper()}",
+                    "trade"
+                )
+            else:
+                buy_side = event.side
+                self.log(
+                    f"FLASH CRASH: {event.side.upper()} "
+                    f"drop {event.drop:.2f} ({event.old_price:.2f} -> {event.new_price:.2f})",
+                    "trade"
+                )
+
+            current_price = prices.get(buy_side, 0)
             if current_price > 0:
-                await self.execute_buy(event.side, current_price)
+                await self.execute_buy(buy_side, current_price)
 
     async def _check_expiry_exit(self, prices: Dict[str, float]) -> None:
         """Force-exit all positions if market is about to expire."""
@@ -122,8 +135,9 @@ class FlashCrashStrategy(BaseStrategy):
         stats = self.positions.get_stats()
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
+        mode_str = f"{Colors.YELLOW}MOMENTUM{Colors.RESET}" if self.flash_config.reverse else "REVERT"
         lines.append(
-            f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] "
+            f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] [{mode_str}] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} | PnL: ${stats['total_pnl']:+.2f}"
         )
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
