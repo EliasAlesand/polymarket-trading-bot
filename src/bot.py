@@ -348,7 +348,7 @@ class TradingBot:
                 order_type,
             )
 
-            logger.info(
+            logger.debug(
                 f"Order placed: {side} {size}@{price} "
                 f"(token: {token_id[:16]}...)"
             )
@@ -501,7 +501,7 @@ class TradingBot:
                 try:
                     matched = float(size_matched)
                     if matched > 0:
-                        logger.info(
+                        logger.debug(
                             f"Order {order_id} filled: "
                             f"{size_matched}/{original_size}"
                         )

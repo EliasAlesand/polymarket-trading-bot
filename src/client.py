@@ -580,7 +580,7 @@ class ClobClient(ApiClient):
         }
 
         body_json = json.dumps(body, separators=(',', ':'))
-        logger.info(f"POST /order body: {body_json}")
+        logger.debug(f"POST /order body: {body_json}")
         headers = self._build_headers("POST", endpoint, body_json)
 
         return self._request(
