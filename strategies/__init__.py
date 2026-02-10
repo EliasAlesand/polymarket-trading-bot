@@ -20,6 +20,7 @@ import pkgutil
 
 from strategies.base import BaseStrategy, StrategyConfig
 from strategies.flash_crash import FlashCrashStrategy, FlashCrashConfig
+from strategies.orderbook_imbalance import OrderbookImbalanceStrategy, OrderbookImbalanceConfig
 
 
 def _discover_strategies():
@@ -47,6 +48,8 @@ __all__ = [
     "StrategyConfig",
     "FlashCrashStrategy",
     "FlashCrashConfig",
+    "OrderbookImbalanceStrategy",
+    "OrderbookImbalanceConfig",
     "get_strategy",
     "list_strategies",
 ]

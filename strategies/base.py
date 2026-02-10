@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import asyncio
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
@@ -344,23 +345,19 @@ class BaseStrategy(ABC):
         return prices
 
     async def _check_exits(self, prices: Dict[str, float]) -> None:
-        """Check and execute exits for all positions."""
-        exits = self.positions.check_all_exits(prices)
+        """Check and execute exits using best bid (actual sell price), not mid."""
+        bid_prices = {}
+        for side in ["up", "down"]:
+            best_bid = self.market.get_best_bid(side)
+            if best_bid > 0:
+                bid_prices[side] = best_bid
+            elif side in prices:
+                bid_prices[side] = prices[side]
 
-        for position, exit_type, pnl in exits:
-            if exit_type == "take_profit":
-                self.log(
-                    f"TAKE PROFIT: {position.side.upper()} PnL: +${pnl:.2f}",
-                    "success"
-                )
-            elif exit_type == "stop_loss":
-                self.log(
-                    f"STOP LOSS: {position.side.upper()} PnL: ${pnl:.2f}",
-                    "warning"
-                )
+        exits = self.positions.check_all_exits(bid_prices)
 
-            # Execute sell
-            await self.execute_sell(position, prices.get(position.side, 0))
+        for position, exit_type, _pnl in exits:
+            await self.execute_sell(position, prices.get(position.side, 0), exit_type=exit_type)
 
     async def execute_buy(self, side: str, current_price: float) -> bool:
         """
@@ -378,8 +375,14 @@ class BaseStrategy(ABC):
             self.log(f"No token ID for {side}", "error")
             return False
 
-        size = self.config.size / current_price
-        buy_price = min(current_price + 0.02, 0.99)
+        # Use best ask (actual sell offer) instead of arbitrary +0.02 offset
+        best_ask = self.market.get_best_ask(side)
+        if best_ask <= 0 or best_ask >= 1.0:
+            best_ask = current_price + 0.01  # fallback
+        buy_price = min(best_ask, 0.99)
+        # Round size UP so notional (size * price) stays >= config.size after
+        # the Order class rounds size DOWN to 2 decimals
+        size = math.ceil(self.config.size / buy_price * 100) / 100
 
         result = await self.bot.place_order(
             token_id=token_id,
@@ -394,32 +397,32 @@ class BaseStrategy(ABC):
 
         # Check if order was immediately matched
         status = result.data.get("status", "")
-        if status != "matched":
+        if status == "matched":
+            # Already filled — use size from response to avoid extra API call
+            actual_size = float(result.data.get("size_matched", 0)) or size
+        else:
             filled_size = await self.bot.wait_for_fill(result.order_id, timeout=15.0)
             if filled_size <= 0:
                 self.log("Order not filled, cancelling", "warning")
                 await self.bot.cancel_order(result.order_id)
                 return False
+            actual_size = filled_size
 
-        # Use the actual filled size, not the intended size
-        actual_size = await self.bot.get_filled_size(result.order_id)
-        if actual_size <= 0:
-            actual_size = size  # fallback if API call fails
+            if actual_size < size:
+                await self.bot.cancel_order(result.order_id)
 
-        if actual_size < size:
-            await self.bot.cancel_order(result.order_id)
-
-        self.log(f"BUY {side.upper()} @ {current_price:.4f} x{actual_size:.2f}", "success")
+        # Track actual execution price (buy_price), not mid price
+        self.log(f"BUY {side.upper()} @ {buy_price:.4f} x{actual_size:.2f}", "success")
         self.positions.open_position(
             side=side,
             token_id=token_id,
-            entry_price=current_price,
+            entry_price=buy_price,
             size=actual_size,
             order_id=result.order_id,
         )
         return True
 
-    async def execute_sell(self, position: Position, current_price: float) -> bool:
+    async def execute_sell(self, position: Position, current_price: float, exit_type: str = None) -> bool:
         """
         Execute sell order to close position.
 
@@ -428,6 +431,7 @@ class BaseStrategy(ABC):
         Args:
             position: Position to close
             current_price: Current price
+            exit_type: "take_profit", "stop_loss", or None (manual)
 
         Returns:
             True if sell order filled
@@ -441,8 +445,18 @@ class BaseStrategy(ABC):
             return False
 
         sell_size = on_chain_balance
-        sell_price = max(current_price - 0.02, 0.01)
-        pnl = (current_price - position.entry_price) * sell_size
+        # Use best bid (actual buy offer) instead of arbitrary -0.02 offset
+        best_bid = self.market.get_best_bid(position.side)
+        if best_bid <= 0:
+            best_bid = current_price - 0.01  # fallback
+        sell_price = max(best_bid, 0.01)
+
+        # Fee-adjusted PnL: subtract taker fees on both buy and sell legs
+        fee_bps = self.bot._market_props_cache.get(position.token_id, {}).get("fee_rate_bps", 0)
+        fee_rate = fee_bps / 10000  # e.g. 100 bps -> 0.01
+        buy_fee = position.entry_price * sell_size * fee_rate
+        sell_fee = sell_price * sell_size * fee_rate
+        pnl = (sell_price - position.entry_price) * sell_size - buy_fee - sell_fee
 
         result = await self.bot.place_order(
             token_id=position.token_id,
@@ -455,7 +469,13 @@ class BaseStrategy(ABC):
             self.log(f"Sell failed: {result.message}", "error")
             return False
 
-        self.log(f"SELL {position.side.upper()} @ {current_price:.4f} PnL: ${pnl:+.2f}", "success")
+        reason = ""
+        if exit_type == "take_profit":
+            reason = "TP "
+        elif exit_type == "stop_loss":
+            reason = "SL "
+        level = "success" if pnl >= 0 else "warning"
+        self.log(f"{reason}SELL {position.side.upper()} @ {sell_price:.4f} PnL: ${pnl:+.2f}", level)
         self.positions.close_position(position.id, realized_pnl=pnl)
         return True
 

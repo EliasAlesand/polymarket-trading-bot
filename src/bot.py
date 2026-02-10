@@ -187,6 +187,9 @@ class TradingBot:
         self.clob_client: Optional[ClobClient] = None
         self.relayer_client: Optional[RelayerClient] = None
         self._api_creds: Optional[ApiCredentials] = None
+        self._market_props_cache: Dict[str, Dict[str, Any]] = {}  # token_id -> {neg_risk, tick_size, fee_rate_bps}
+        self._w3 = None  # Cached Web3 instance
+        self._ctf_contract = None  # Cached CTF contract instance
 
         # Load private key
         if private_key:
@@ -313,19 +316,28 @@ class TradingBot:
         signer = self.require_signer()
 
         try:
-            # Check market properties for correct signing and rounding
-            neg_risk = await self._run_in_thread(
-                self.clob_client.get_neg_risk, token_id
-            )
-            tick_size = await self._run_in_thread(
-                self.clob_client.get_tick_size, token_id
-            )
-
-            # Resolve fee rate: use market fee if caller didn't specify
-            if fee_rate_bps == 0:
-                fee_rate_bps = await self._run_in_thread(
-                    self.clob_client.get_fee_rate_bps, token_id
+            # Check market properties (cached + parallel fetch)
+            cached = self._market_props_cache.get(token_id)
+            if cached:
+                neg_risk = cached["neg_risk"]
+                tick_size = cached["tick_size"]
+                if fee_rate_bps == 0:
+                    fee_rate_bps = cached["fee_rate_bps"]
+            else:
+                # Fetch all 3 in parallel instead of sequentially
+                results = await asyncio.gather(
+                    self._run_in_thread(self.clob_client.get_neg_risk, token_id),
+                    self._run_in_thread(self.clob_client.get_tick_size, token_id),
+                    self._run_in_thread(self.clob_client.get_fee_rate_bps, token_id),
                 )
+                neg_risk, tick_size, market_fee = results
+                self._market_props_cache[token_id] = {
+                    "neg_risk": neg_risk,
+                    "tick_size": tick_size,
+                    "fee_rate_bps": market_fee,
+                }
+                if fee_rate_bps == 0:
+                    fee_rate_bps = market_fee
 
             # Create order with proper rounding
             order = Order(
@@ -478,21 +490,22 @@ class TradingBot:
         self,
         order_id: str,
         timeout: float = 15.0,
-        poll_interval: float = 1.0
     ) -> float:
         """
         Poll order status until matched/filled or timeout.
 
+        Uses fast polling initially (0.3s) then backs off to 1s.
+
         Args:
             order_id: Order ID to check
             timeout: Max seconds to wait
-            poll_interval: Seconds between polls
 
         Returns:
             Filled size (float), or 0.0 if not filled
         """
         import time
         start = time.time()
+        poll_interval = 0.3  # Start fast
         while time.time() - start < timeout:
             order_data = await self.get_order(order_id)
             if order_data:
@@ -509,6 +522,7 @@ class TradingBot:
                 except (ValueError, TypeError):
                     pass
             await asyncio.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, 1.0)  # Backoff to 1s
 
         logger.warning(f"Order {order_id} not filled within {timeout}s")
         return 0.0
@@ -531,6 +545,25 @@ class TradingBot:
                 pass
         return 0.0
 
+    def _get_ctf_contract(self):
+        """Get cached CTF contract instance (creates Web3 + contract once)."""
+        if self._ctf_contract is None:
+            from web3 import Web3
+            import os
+
+            rpc = os.environ.get("POLY_RPC_URL", "https://polygon-rpc.com")
+            self._w3 = Web3(Web3.HTTPProvider(rpc))
+
+            CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+            abi = [{"name": "balanceOf", "type": "function",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "owner", "type": "address"},
+                               {"name": "id", "type": "uint256"}],
+                    "outputs": [{"name": "", "type": "uint256"}]}]
+
+            self._ctf_contract = self._w3.eth.contract(address=CTF, abi=abi)
+        return self._ctf_contract
+
     async def get_token_balance(self, token_id: str) -> float:
         """
         Get actual on-chain ERC-1155 token balance for the Safe wallet.
@@ -545,20 +578,7 @@ class TradingBot:
             Balance in shares (float), or 0.0
         """
         try:
-            from web3 import Web3
-            import os
-
-            rpc = os.environ.get("POLY_RPC_URL", "https://polygon-rpc.com")
-            w3 = Web3(Web3.HTTPProvider(rpc))
-
-            CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-            abi = [{"name": "balanceOf", "type": "function",
-                    "stateMutability": "view",
-                    "inputs": [{"name": "owner", "type": "address"},
-                               {"name": "id", "type": "uint256"}],
-                    "outputs": [{"name": "", "type": "uint256"}]}]
-
-            ctf = w3.eth.contract(address=CTF, abi=abi)
+            ctf = self._get_ctf_contract()
             balance = await self._run_in_thread(
                 ctf.functions.balanceOf(
                     self.config.safe_address, int(token_id)
