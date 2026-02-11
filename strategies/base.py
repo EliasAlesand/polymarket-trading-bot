@@ -51,7 +51,7 @@ class StrategyConfig:
     max_positions: int = 1
     take_profit: float = 0.30  # 30% gain
     stop_loss: float = 0.25  # 25% loss
-    min_hold_seconds: float = 5.0  # Minimum seconds before exit checks kick in
+    min_hold_seconds: float = 3.0  # Minimum seconds before exit checks kick in
 
     def __post_init__(self):
         # Auto-convert if user passed percentages as whole numbers (e.g. 25 instead of 0.25)
@@ -87,8 +87,8 @@ class StrategyConfig:
                             help="Stop loss percentage, e.g. 0.25 = 25%% (default: 0.25)")
         parser.add_argument("--lookback", type=int, default=10,
                             help="Price lookback window in seconds (default: 10)")
-        parser.add_argument("--min-hold", type=float, default=5.0,
-                            help="Minimum hold time in seconds before exits (default: 5.0)")
+        parser.add_argument("--min-hold", type=float, default=3.0,
+                            help="Minimum hold time in seconds before exits (default: 3.0)")
         parser.add_argument("--debug", action="store_true",
                             help="Enable debug logging")
 
@@ -499,13 +499,6 @@ class BaseStrategy(ABC):
             best_bid = current_price - 0.01  # fallback
         sell_price = max(best_bid, 0.01)
 
-        # Fee-adjusted PnL: subtract taker fees on both buy and sell legs
-        fee_bps = self.bot._market_props_cache.get(position.token_id, {}).get("fee_rate_bps", 0)
-        fee_rate = fee_bps / 10000  # e.g. 100 bps -> 0.01
-        buy_fee = position.entry_price * sell_size * fee_rate
-        sell_fee = sell_price * sell_size * fee_rate
-        pnl = (sell_price - position.entry_price) * sell_size - buy_fee - sell_fee
-
         result = await self.bot.place_order(
             token_id=position.token_id,
             price=sell_price,
@@ -517,13 +510,22 @@ class BaseStrategy(ABC):
             self.log(f"Sell failed: {result.message}", "error")
             return False
 
+        # Get actual sell fill price (same approach as buy)
+        actual_sell_price = sell_price  # fallback
+        avg_fill = await self.bot.get_average_fill_price(result.order_id, position.token_id)
+        if avg_fill and avg_fill > 0:
+            actual_sell_price = avg_fill
+
+        # PnL from actual fill prices, using tracked position size
+        pnl = (actual_sell_price - position.entry_price) * position.size
+
         reason = ""
         if exit_type == "take_profit":
             reason = "TP "
         elif exit_type == "stop_loss":
             reason = "SL "
         level = "success" if pnl >= 0 else "warning"
-        self.log(f"{reason}SELL {position.side.upper()} @ {sell_price:.4f} PnL: ${pnl:+.2f}", level)
+        self.log(f"{reason}SELL {position.side.upper()} @ {actual_sell_price:.4f} PnL: ${pnl:+.2f}", level)
         self.positions.close_position(position.id, realized_pnl=pnl)
         return True
 

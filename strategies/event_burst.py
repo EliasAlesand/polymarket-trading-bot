@@ -42,12 +42,12 @@ class EventBurstConfig(StrategyConfig):
     min_price_impact: float = 0.015 # Min absolute price change (probability points)
     max_volume_ratio: float = 2.0   # Max volume for "informed" (vs crowd)
     liquidity_drop: float = 0.6     # Depth must drop below this ratio
+    min_liquidity: float = 0.10     # Block entry if depth below this ratio (empty book)
     spread_expansion: float = 1.8   # Spread must be Nx average
 
     # Exit rules
     profit_target: float = 0.15     # +15% price move
     max_hold_seconds: float = 90.0  # Time-based exit
-    liquidity_recovery: float = 0.95 # Depth recovery ratio to exit
 
     # Safety
     max_price: float = 0.85         # Never buy above
@@ -143,9 +143,6 @@ class EventBurstStrategy(BaseStrategy):
             "liquidity": False,
             "spread": False,
         }
-
-        # Entry state for custom exits
-        self._entry_depth: float = 0.0
 
         # Timing
         self._start_time: float = time.time()
@@ -326,12 +323,6 @@ class EventBurstStrategy(BaseStrategy):
         self._spread_ratio = ratio
         return (ratio >= self.eb_config.spread_expansion, ratio)
 
-    def _get_current_depth(self) -> float:
-        """Get most recent orderbook depth."""
-        if self._book_snapshots:
-            return self._book_snapshots[-1][3]
-        return 0.0
-
     # --- Warmup ---
 
     @property
@@ -378,6 +369,14 @@ class EventBurstStrategy(BaseStrategy):
         if not direction:
             return
 
+        # Block entry on empty books (liq_val is current/old ratio)
+        if liq_val < self.eb_config.min_liquidity:
+            self.log(
+                f"BLOCKED: book too thin (depth={liq_val:.0%} < {self.eb_config.min_liquidity:.0%})",
+                "warning"
+            )
+            return
+
         buy_side = direction
         current_price = prices.get(buy_side, 0)
         if current_price <= 0:
@@ -407,9 +406,6 @@ class EventBurstStrategy(BaseStrategy):
             "trade"
         )
 
-        # Record depth at entry for liquidity recovery exit
-        self._entry_depth = self._get_current_depth()
-
         success = await self.execute_buy(buy_side, current_price)
         if success:
             self._last_trade_time = time.time()
@@ -430,7 +426,6 @@ class EventBurstStrategy(BaseStrategy):
                 continue
 
             pnl_pct = position.get_pnl_percent(price) / 100  # convert to fraction
-            current_depth = self._get_current_depth()
 
             exit_reason = None
 
@@ -445,11 +440,6 @@ class EventBurstStrategy(BaseStrategy):
             # Time limit
             elif hold_time >= self.eb_config.max_hold_seconds:
                 exit_reason = "TIMEOUT"
-
-            # Liquidity recovery
-            elif (self._entry_depth > 0 and current_depth > 0 and
-                  current_depth / self._entry_depth >= self.eb_config.liquidity_recovery):
-                exit_reason = "LIQ_RECOVER"
 
             if exit_reason:
                 self.log(
@@ -667,12 +657,8 @@ class EventBurstStrategy(BaseStrategy):
                 # Show exit conditions
                 target_price = pos.entry_price * (1 + self.eb_config.profit_target)
                 stop_price = pos.entry_price * (1 - self.eb_config.profit_target)
-                liq_status = ""
-                if self._entry_depth > 0 and self._current_depth > 0:
-                    recovery = self._current_depth / self._entry_depth
-                    liq_status = f" | Depth: {recovery:.0%}/{self.eb_config.liquidity_recovery:.0%}"
                 lines.append(
-                    f"       Target: {target_price:.4f} | Stop: {stop_price:.4f}{liq_status}"
+                    f"       Target: {target_price:.4f} | Stop: {stop_price:.4f}"
                 )
         else:
             lines.append(f"  {Colors.CYAN}(no open positions){Colors.RESET}")
@@ -710,5 +696,4 @@ class EventBurstStrategy(BaseStrategy):
         self._current_depth = 0.0
         self._direction = None
         self._filter_states = {k: False for k in self._filter_states}
-        self._entry_depth = 0.0
         self._start_time = time.time()
