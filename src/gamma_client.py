@@ -206,6 +206,58 @@ class GammaClient(ThreadLocalSessionMixin):
                 result[str(outcome).lower()] = cast(values[i])
         return result
 
+    def get_market_info_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """
+        Get comprehensive market info by slug (any market type).
+
+        Args:
+            slug: Market slug (e.g., "will-team-x-win-game-y")
+
+        Returns:
+            Dictionary with market info including token IDs and prices
+        """
+        market = self.get_market_by_slug(slug)
+        if not market:
+            return None
+
+        token_ids = self.parse_token_ids(market)
+        prices = self.parse_prices(market)
+
+        return {
+            "slug": market.get("slug"),
+            "question": market.get("question"),
+            "end_date": market.get("endDate"),
+            "token_ids": token_ids,
+            "prices": prices,
+            "accepting_orders": market.get("acceptingOrders", False),
+            "best_bid": market.get("bestBid"),
+            "best_ask": market.get("bestAsk"),
+            "spread": market.get("spread"),
+            "seconds_delay": market.get("secondsDelay", 0),
+            "raw": market,
+        }
+
+    def list_events(self, **params) -> List[Dict[str, Any]]:
+        """
+        List events from Gamma API.
+
+        Args:
+            **params: Query parameters (active, closed, tag_slug, volume_min,
+                      order, ascending, limit, offset, start_date_min, etc.)
+
+        Returns:
+            List of event dictionaries
+        """
+        url = f"{self.host}/events"
+        try:
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            if response.status_code == 200:
+                return response.json()
+            return []
+        except Exception as e:
+            logger.debug(f"Failed to list events: {e}")
+            return []
+
     def get_market_info(self, coin: str) -> Optional[Dict[str, Any]]:
         """
         Get comprehensive market info for current 15-minute market.

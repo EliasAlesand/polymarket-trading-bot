@@ -150,6 +150,7 @@ class MarketManager:
     def __init__(
         self,
         coin: str = "BTC",
+        slug: Optional[str] = None,
         market_check_interval: float = 30.0,
         auto_switch_market: bool = True,
     ):
@@ -158,10 +159,12 @@ class MarketManager:
 
         Args:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
+            slug: Direct market slug (overrides coin for any market)
             market_check_interval: Seconds between market checks
             auto_switch_market: Auto switch when market changes
         """
-        self.coin = coin.upper()
+        self.coin = coin.upper() if coin else ""
+        self.slug = slug
         self.market_check_interval = market_check_interval
         self.auto_switch_market = auto_switch_market
 
@@ -298,12 +301,18 @@ class MarketManager:
 
     def discover_market(self, update_state: bool = True) -> Optional[MarketInfo]:
         """
-        Discover current 15-minute market.
+        Discover current market.
+
+        In slug mode, fetches the specific market by slug.
+        In coin mode, discovers the current 15-minute market.
 
         Returns:
             MarketInfo if found, None otherwise
         """
-        market_data = self.gamma.get_market_info(self.coin)
+        if self.slug:
+            market_data = self.gamma.get_market_info_by_slug(self.slug)
+        else:
+            market_data = self.gamma.get_market_info(self.coin)
 
         if not market_data:
             return None
@@ -448,8 +457,8 @@ class MarketManager:
         # Start WebSocket in background
         self._ws_task = asyncio.create_task(self._run_websocket())
 
-        # Start market check loop
-        if self.auto_switch_market:
+        # Start market check loop (disabled for slug mode — no auto-switching)
+        if self.auto_switch_market and not self.slug:
             self._market_check_task = asyncio.create_task(self._market_check_loop())
 
         return True
@@ -493,7 +502,7 @@ class MarketManager:
         start = time.time()
         while time.time() - start < timeout:
             if self._ws_connected:
-                if self.get_orderbook("up") or self.get_orderbook("down"):
+                if any(self.get_orderbook(side) for side in self.token_ids):
                     return True
             await asyncio.sleep(0.1)
         return False

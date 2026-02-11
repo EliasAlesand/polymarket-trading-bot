@@ -32,7 +32,7 @@ Usage:
 
 import argparse
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -75,9 +75,11 @@ class TradeFlowConfig(StrategyConfig):
         """Create config from parsed CLI args."""
         return cls(
             coin=args.coin.upper(),
+            slug=getattr(args, "slug", ""),
             size=args.size,
             take_profit=args.take_profit,
             stop_loss=args.stop_loss,
+            min_hold_seconds=args.min_hold,
             price_lookback_seconds=args.lookback,
             flow_threshold=args.threshold,
             window_seconds=args.window,
@@ -120,8 +122,8 @@ class TradeFlowStrategy(BaseStrategy):
         self._trade_count: int = 0
         self._ignored_count: int = 0  # trades in the spread (ambiguous)
 
-        # Signal: "up" or "down" confirmation counter
-        self._confirmation_count: Dict[str, int] = {"up": 0, "down": 0}
+        # Signal: confirmation counter per side (dynamic keys)
+        self._confirmation_count: Dict[str, int] = defaultdict(int)
         self._last_trade_time: float = 0.0
 
         # Warmup: wait for rolling window to fill before accepting signals
@@ -164,11 +166,11 @@ class TradeFlowStrategy(BaseStrategy):
             self._ignored_count += 1
             return  # in the spread — ambiguous
 
-        # Convert to directional: is this trade bullish (pushing price UP)?
-        if side == "up":
-            is_bullish = is_taker_buy      # buying UP = bullish
+        # Convert to directional: is this trade bullish (pushing price UP/YES)?
+        if side == self.positive_side:
+            is_bullish = is_taker_buy      # buying UP/YES = bullish
         else:
-            is_bullish = not is_taker_buy   # buying DOWN = bearish, selling DOWN = bullish
+            is_bullish = not is_taker_buy   # buying DOWN/NO = bearish, selling = bullish
 
         self._trades.append((time.time(), trade.size, is_bullish))
 
@@ -198,16 +200,15 @@ class TradeFlowStrategy(BaseStrategy):
     def _get_signal(self) -> Optional[str]:
         """Check if flow is confirmed in either direction.
 
-        flow_ratio > threshold → buy UP (informed buying YES)
-        flow_ratio < 1-threshold → buy DOWN (informed selling YES = buying NO)
+        flow_ratio > threshold → buy positive side (informed buying YES/UP)
+        flow_ratio < 1-threshold → buy negative side (informed selling YES = buying NO/DOWN)
         """
-        threshold = self.tf_config.flow_threshold
         required = self.tf_config.confirmation_ticks
 
-        if self._confirmation_count["up"] >= required:
-            return "up"
-        if self._confirmation_count["down"] >= required:
-            return "down"
+        if self._confirmation_count.get(self.positive_side, 0) >= required:
+            return self.positive_side
+        if self._confirmation_count.get(self.negative_side, 0) >= required:
+            return self.negative_side
 
         return None
 
@@ -242,17 +243,17 @@ class TradeFlowStrategy(BaseStrategy):
         # Update confirmation counters
         threshold = self.tf_config.flow_threshold
 
-        # High ratio → informed buying on UP token → buy UP
+        # High ratio → informed buying on positive token → buy positive side
         if self._flow_ratio >= threshold:
-            self._confirmation_count["up"] += 1
+            self._confirmation_count[self.positive_side] += 1
         else:
-            self._confirmation_count["up"] = 0
+            self._confirmation_count[self.positive_side] = 0
 
-        # Low ratio → informed selling on UP token → buy DOWN
+        # Low ratio → informed selling on positive token → buy negative side
         if self._flow_ratio <= (1.0 - threshold):
-            self._confirmation_count["down"] += 1
+            self._confirmation_count[self.negative_side] += 1
         else:
-            self._confirmation_count["down"] = 0
+            self._confirmation_count[self.negative_side] = 0
 
         # Check for confirmed signal
         buy_side = self._get_signal()
@@ -330,7 +331,7 @@ class TradeFlowStrategy(BaseStrategy):
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         lines.append(
-            f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] "
+            f"{Colors.CYAN}[{self.market_label}]{Colors.RESET} [{ws_status}] "
             f"[FLOW>{threshold:.0%} x{self.tf_config.confirmation_ticks} "
             f"{self.tf_config.window_seconds:.0f}s] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
@@ -340,36 +341,40 @@ class TradeFlowStrategy(BaseStrategy):
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # Orderbook display
-        up_ob = self.market.get_orderbook("up")
-        down_ob = self.market.get_orderbook("down")
+        pos = self.positive_side
+        neg = self.negative_side
+        pos_ob = self.market.get_orderbook(pos)
+        neg_ob = self.market.get_orderbook(neg)
+        pos_label = pos.upper()
+        neg_label = neg.upper()
 
-        lines.append(f"{Colors.GREEN}{'UP':^39}{Colors.RESET}|{Colors.RED}{'DOWN':^39}{Colors.RESET}")
+        lines.append(f"{Colors.GREEN}{pos_label:^39}{Colors.RESET}|{Colors.RED}{neg_label:^39}{Colors.RESET}")
         lines.append(f"{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}|{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}")
         lines.append("-" * 80)
 
-        up_bids = up_ob.bids[:5] if up_ob else []
-        up_asks = up_ob.asks[:5] if up_ob else []
-        down_bids = down_ob.bids[:5] if down_ob else []
-        down_asks = down_ob.asks[:5] if down_ob else []
+        pos_bids = pos_ob.bids[:5] if pos_ob else []
+        pos_asks = pos_ob.asks[:5] if pos_ob else []
+        neg_bids = neg_ob.bids[:5] if neg_ob else []
+        neg_asks = neg_ob.asks[:5] if neg_ob else []
 
         for i in range(5):
-            up_bid = f"{up_bids[i].price:>9.4f} {up_bids[i].size:>9.1f}" if i < len(up_bids) else f"{'--':>9} {'--':>9}"
-            up_ask = f"{up_asks[i].price:>9.4f} {up_asks[i].size:>9.1f}" if i < len(up_asks) else f"{'--':>9} {'--':>9}"
-            down_bid = f"{down_bids[i].price:>9.4f} {down_bids[i].size:>9.1f}" if i < len(down_bids) else f"{'--':>9} {'--':>9}"
-            down_ask = f"{down_asks[i].price:>9.4f} {down_asks[i].size:>9.1f}" if i < len(down_asks) else f"{'--':>9} {'--':>9}"
-            lines.append(f"{up_bid} | {up_ask}|{down_bid} | {down_ask}")
+            pb = f"{pos_bids[i].price:>9.4f} {pos_bids[i].size:>9.1f}" if i < len(pos_bids) else f"{'--':>9} {'--':>9}"
+            pa = f"{pos_asks[i].price:>9.4f} {pos_asks[i].size:>9.1f}" if i < len(pos_asks) else f"{'--':>9} {'--':>9}"
+            nb = f"{neg_bids[i].price:>9.4f} {neg_bids[i].size:>9.1f}" if i < len(neg_bids) else f"{'--':>9} {'--':>9}"
+            na = f"{neg_asks[i].price:>9.4f} {neg_asks[i].size:>9.1f}" if i < len(neg_asks) else f"{'--':>9} {'--':>9}"
+            lines.append(f"{pb} | {pa}|{nb} | {na}")
 
         lines.append("-" * 80)
 
         # Mid price / spread
-        up_mid = up_ob.mid_price if up_ob else prices.get("up", 0)
-        down_mid = down_ob.mid_price if down_ob else prices.get("down", 0)
-        up_spread = self.market.get_spread("up")
-        down_spread = self.market.get_spread("down")
+        pos_mid = pos_ob.mid_price if pos_ob else prices.get(pos, 0)
+        neg_mid = neg_ob.mid_price if neg_ob else prices.get(neg, 0)
+        pos_spread = self.market.get_spread(pos)
+        neg_spread = self.market.get_spread(neg)
 
         lines.append(
-            f"Mid: {Colors.GREEN}{up_mid:.4f}{Colors.RESET}  Spread: {up_spread:.4f}           |"
-            f"Mid: {Colors.RED}{down_mid:.4f}{Colors.RESET}  Spread: {down_spread:.4f}"
+            f"Mid: {Colors.GREEN}{pos_mid:.4f}{Colors.RESET}  Spread: {pos_spread:.4f}           |"
+            f"Mid: {Colors.RED}{neg_mid:.4f}{Colors.RESET}  Spread: {neg_spread:.4f}"
         )
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
@@ -379,17 +384,17 @@ class TradeFlowStrategy(BaseStrategy):
         bar = self._format_flow_bar(self._flow_ratio)
 
         # Determine which direction is confirmed (if any)
-        up_count = self._confirmation_count["up"]
-        down_count = self._confirmation_count["down"]
+        pos_count = self._confirmation_count.get(pos, 0)
+        neg_count = self._confirmation_count.get(neg, 0)
 
-        if up_count >= required:
-            signal_str = f"{Colors.GREEN}>>> BUY UP{Colors.RESET}"
-        elif down_count >= required:
-            signal_str = f"{Colors.RED}<<< BUY DOWN{Colors.RESET}"
-        elif up_count > 0:
-            signal_str = f"UP {up_count}/{required}"
-        elif down_count > 0:
-            signal_str = f"DN {down_count}/{required}"
+        if pos_count >= required:
+            signal_str = f"{Colors.GREEN}>>> BUY {pos_label}{Colors.RESET}"
+        elif neg_count >= required:
+            signal_str = f"{Colors.RED}<<< BUY {neg_label}{Colors.RESET}"
+        elif pos_count > 0:
+            signal_str = f"{pos_label} {pos_count}/{required}"
+        elif neg_count > 0:
+            signal_str = f"{neg_label} {neg_count}/{required}"
         else:
             signal_str = f"0/{required}"
 
@@ -404,18 +409,16 @@ class TradeFlowStrategy(BaseStrategy):
         )
 
         # Price guard status
-        for side in ["up", "down"]:
+        for side in self.token_ids:
             price = prices.get(side, 0)
             if price > self.tf_config.max_price:
-                label = "UP" if side == "up" else "DN"
                 lines.append(
-                    f"  {Colors.RED}! {label} @ {price:.4f} > "
+                    f"  {Colors.RED}! {side.upper()} @ {price:.4f} > "
                     f"{self.tf_config.max_price} (blocked){Colors.RESET}"
                 )
             elif 0 < price < self.tf_config.min_price:
-                label = "UP" if side == "up" else "DN"
                 lines.append(
-                    f"  {Colors.RED}! {label} @ {price:.4f} < "
+                    f"  {Colors.RED}! {side.upper()} @ {price:.4f} < "
                     f"{self.tf_config.min_price} (blocked){Colors.RESET}"
                 )
 
@@ -446,7 +449,11 @@ class TradeFlowStrategy(BaseStrategy):
                 filled = float(order.get("size_matched", 0))
                 order_id = order.get("id", "")[:8]
                 token = order.get("asset_id", "")
-                token_side = "UP" if token == self.token_ids.get("up") else "DOWN" if token == self.token_ids.get("down") else "?"
+                token_side = "?"
+                for s, tid in self.token_ids.items():
+                    if token == tid:
+                        token_side = s.upper()
+                        break
                 color = Colors.GREEN if side == "BUY" else Colors.RED
                 lines.append(f"  {color}{side:4}{Colors.RESET} {token_side:4} @ {price:.4f} Size: {size:.1f} Filled: {filled:.1f} ID: {order_id}...")
         else:
@@ -505,5 +512,5 @@ class TradeFlowStrategy(BaseStrategy):
         self._total_vol = 0.0
         self._trade_count = 0
         self._ignored_count = 0
-        self._confirmation_count = {"up": 0, "down": 0}
+        self._confirmation_count = defaultdict(int)
         self._start_time = time.time()  # restart warmup for new market

@@ -45,7 +45,7 @@ class EventBurstConfig(StrategyConfig):
     spread_expansion: float = 1.8   # Spread must be Nx average
 
     # Exit rules
-    profit_target: float = 0.04     # +4% price move
+    profit_target: float = 0.15     # +15% price move
     max_hold_seconds: float = 90.0  # Time-based exit
     liquidity_recovery: float = 0.8 # Depth recovery ratio to exit
 
@@ -71,8 +71,8 @@ class EventBurstConfig(StrategyConfig):
                             help="Liquidity drop ratio threshold (default: 0.6)")
         parser.add_argument("--spread-exp", type=float, default=1.8,
                             help="Spread expansion multiplier (default: 1.8)")
-        parser.add_argument("--profit", type=float, default=0.04,
-                            help="Profit target as fraction (default: 0.04 = 4%%)")
+        parser.add_argument("--profit", type=float, default=0.15,
+                            help="Profit target as fraction (default: 0.15 = 15%%)")
         parser.add_argument("--max-hold", type=float, default=90.0,
                             help="Max hold time in seconds (default: 90)")
         parser.add_argument("--cooldown", type=float, default=30.0,
@@ -83,9 +83,11 @@ class EventBurstConfig(StrategyConfig):
         """Create config from parsed CLI args."""
         return cls(
             coin=args.coin.upper(),
+            slug=getattr(args, "slug", ""),
             size=args.size,
             take_profit=args.take_profit,
             stop_loss=args.stop_loss,
+            min_hold_seconds=args.min_hold,
             price_lookback_seconds=args.lookback,
             burst_ratio=args.burst_ratio,
             burst_window=args.burst_window,
@@ -161,9 +163,9 @@ class EventBurstStrategy(BaseStrategy):
 
     async def on_book_update(self, snapshot: OrderbookSnapshot) -> None:
         """Record orderbook state for impact, liquidity, and spread filters."""
-        # Only track UP token book (YES side)
-        up_token = self.token_ids.get("up", "")
-        if snapshot.asset_id != up_token:
+        # Only track positive side token book (UP/YES)
+        pos_token = self.token_ids.get(self.positive_side, "")
+        if snapshot.asset_id != pos_token:
             return
 
         now = time.time()
@@ -253,7 +255,7 @@ class EventBurstStrategy(BaseStrategy):
         # Volume check: recent volume should be small (informed, not crowd)
         volume_ok = self._burst_ratio < self.eb_config.max_volume_ratio * self.eb_config.burst_ratio
 
-        direction = "up" if change > 0 else "down" if change < 0 else None
+        direction = self.positive_side if change > 0 else self.negative_side if change < 0 else None
         self._direction = direction
 
         triggered = abs_change >= self.eb_config.min_price_impact and direction is not None
@@ -421,8 +423,13 @@ class EventBurstStrategy(BaseStrategy):
             if price <= 0:
                 continue
 
-            pnl_pct = position.get_pnl_percent(price) / 100  # convert to fraction
             hold_time = position.get_hold_time()
+
+            # Skip exits for positions still within minimum hold time
+            if hold_time < self.config.min_hold_seconds:
+                continue
+
+            pnl_pct = position.get_pnl_percent(price) / 100  # convert to fraction
             current_depth = self._get_current_depth()
 
             exit_reason = None
@@ -493,7 +500,7 @@ class EventBurstStrategy(BaseStrategy):
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         lines.append(
-            f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] "
+            f"{Colors.CYAN}[{self.market_label}]{Colors.RESET} [{ws_status}] "
             f"[EVENT BURST 4-filter] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
@@ -502,36 +509,40 @@ class EventBurstStrategy(BaseStrategy):
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # Orderbook display
-        up_ob = self.market.get_orderbook("up")
-        down_ob = self.market.get_orderbook("down")
+        pos = self.positive_side
+        neg = self.negative_side
+        pos_ob = self.market.get_orderbook(pos)
+        neg_ob = self.market.get_orderbook(neg)
+        pos_label = pos.upper()
+        neg_label = neg.upper()
 
-        lines.append(f"{Colors.GREEN}{'UP':^39}{Colors.RESET}|{Colors.RED}{'DOWN':^39}{Colors.RESET}")
+        lines.append(f"{Colors.GREEN}{pos_label:^39}{Colors.RESET}|{Colors.RED}{neg_label:^39}{Colors.RESET}")
         lines.append(f"{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}|{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}")
         lines.append("-" * 80)
 
-        up_bids = up_ob.bids[:5] if up_ob else []
-        up_asks = up_ob.asks[:5] if up_ob else []
-        down_bids = down_ob.bids[:5] if down_ob else []
-        down_asks = down_ob.asks[:5] if down_ob else []
+        pos_bids = pos_ob.bids[:5] if pos_ob else []
+        pos_asks = pos_ob.asks[:5] if pos_ob else []
+        neg_bids = neg_ob.bids[:5] if neg_ob else []
+        neg_asks = neg_ob.asks[:5] if neg_ob else []
 
         for i in range(5):
-            up_bid = f"{up_bids[i].price:>9.4f} {up_bids[i].size:>9.1f}" if i < len(up_bids) else f"{'--':>9} {'--':>9}"
-            up_ask = f"{up_asks[i].price:>9.4f} {up_asks[i].size:>9.1f}" if i < len(up_asks) else f"{'--':>9} {'--':>9}"
-            down_bid = f"{down_bids[i].price:>9.4f} {down_bids[i].size:>9.1f}" if i < len(down_bids) else f"{'--':>9} {'--':>9}"
-            down_ask = f"{down_asks[i].price:>9.4f} {down_asks[i].size:>9.1f}" if i < len(down_asks) else f"{'--':>9} {'--':>9}"
-            lines.append(f"{up_bid} | {up_ask}|{down_bid} | {down_ask}")
+            pb = f"{pos_bids[i].price:>9.4f} {pos_bids[i].size:>9.1f}" if i < len(pos_bids) else f"{'--':>9} {'--':>9}"
+            pa = f"{pos_asks[i].price:>9.4f} {pos_asks[i].size:>9.1f}" if i < len(pos_asks) else f"{'--':>9} {'--':>9}"
+            nb = f"{neg_bids[i].price:>9.4f} {neg_bids[i].size:>9.1f}" if i < len(neg_bids) else f"{'--':>9} {'--':>9}"
+            na = f"{neg_asks[i].price:>9.4f} {neg_asks[i].size:>9.1f}" if i < len(neg_asks) else f"{'--':>9} {'--':>9}"
+            lines.append(f"{pb} | {pa}|{nb} | {na}")
 
         lines.append("-" * 80)
 
         # Mid price / spread
-        up_mid = up_ob.mid_price if up_ob else prices.get("up", 0)
-        down_mid = down_ob.mid_price if down_ob else prices.get("down", 0)
-        up_spread = self.market.get_spread("up")
-        down_spread = self.market.get_spread("down")
+        pos_mid = pos_ob.mid_price if pos_ob else prices.get(pos, 0)
+        neg_mid = neg_ob.mid_price if neg_ob else prices.get(neg, 0)
+        pos_spread = self.market.get_spread(pos)
+        neg_spread = self.market.get_spread(neg)
 
         lines.append(
-            f"Mid: {Colors.GREEN}{up_mid:.4f}{Colors.RESET}  Spread: {up_spread:.4f}           |"
-            f"Mid: {Colors.RED}{down_mid:.4f}{Colors.RESET}  Spread: {down_spread:.4f}"
+            f"Mid: {Colors.GREEN}{pos_mid:.4f}{Colors.RESET}  Spread: {pos_spread:.4f}           |"
+            f"Mid: {Colors.RED}{neg_mid:.4f}{Colors.RESET}  Spread: {neg_spread:.4f}"
         )
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
@@ -583,18 +594,16 @@ class EventBurstStrategy(BaseStrategy):
             )
 
         # Price guard status
-        for side in ["up", "down"]:
+        for side in self.token_ids:
             price = prices.get(side, 0)
             if price > self.eb_config.max_price:
-                label = "UP" if side == "up" else "DN"
                 lines.append(
-                    f"  {Colors.RED}! {label} @ {price:.4f} > "
+                    f"  {Colors.RED}! {side.upper()} @ {price:.4f} > "
                     f"{self.eb_config.max_price} (blocked){Colors.RESET}"
                 )
             elif 0 < price < self.eb_config.min_price:
-                label = "UP" if side == "up" else "DN"
                 lines.append(
-                    f"  {Colors.RED}! {label} @ {price:.4f} < "
+                    f"  {Colors.RED}! {side.upper()} @ {price:.4f} < "
                     f"{self.eb_config.min_price} (blocked){Colors.RESET}"
                 )
 
@@ -625,7 +634,11 @@ class EventBurstStrategy(BaseStrategy):
                 filled = float(order.get("size_matched", 0))
                 order_id = order.get("id", "")[:8]
                 token = order.get("asset_id", "")
-                token_side = "UP" if token == self.token_ids.get("up") else "DOWN" if token == self.token_ids.get("down") else "?"
+                token_side = "?"
+                for s, tid in self.token_ids.items():
+                    if token == tid:
+                        token_side = s.upper()
+                        break
                 color = Colors.GREEN if side == "BUY" else Colors.RED
                 lines.append(f"  {color}{side:4}{Colors.RESET} {token_side:4} @ {price:.4f} Size: {size:.1f} Filled: {filled:.1f} ID: {order_id}...")
         else:

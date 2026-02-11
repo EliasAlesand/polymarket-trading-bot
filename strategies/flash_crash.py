@@ -54,9 +54,11 @@ class FlashCrashConfig(StrategyConfig):
         """Create config from parsed CLI args."""
         return cls(
             coin=args.coin.upper(),
+            slug=getattr(args, "slug", ""),
             size=args.size,
             take_profit=args.take_profit,
             stop_loss=args.stop_loss,
+            min_hold_seconds=args.min_hold,
             price_lookback_seconds=args.lookback,
             drop_threshold=args.drop,
             exit_before_expiry=args.exit_before,
@@ -109,7 +111,7 @@ class FlashCrashStrategy(BaseStrategy):
         if event:
             # In reverse (momentum) mode, buy the opposite side
             if self.flash_config.reverse:
-                buy_side = "down" if event.side == "up" else "up"
+                buy_side = self.negative_side if event.side == self.positive_side else self.positive_side
                 self.log(
                     f"MOMENTUM: {event.side.upper()} crashed "
                     f"{event.drop:.2f} ({event.old_price:.2f} -> {event.new_price:.2f}) "
@@ -167,7 +169,7 @@ class FlashCrashStrategy(BaseStrategy):
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         mode_str = f"{Colors.YELLOW}MOMENTUM{Colors.RESET}" if self.flash_config.reverse else "REVERT"
         lines.append(
-            f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] [{mode_str}] "
+            f"{Colors.CYAN}[{self.market_label}]{Colors.RESET} [{ws_status}] [{mode_str}] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
             f"WR: {stats['win_rate']:.0f}% | PnL: ${stats['total_pnl']:+.2f}"
@@ -175,52 +177,56 @@ class FlashCrashStrategy(BaseStrategy):
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # Orderbook display
-        up_ob = self.market.get_orderbook("up")
-        down_ob = self.market.get_orderbook("down")
+        pos = self.positive_side
+        neg = self.negative_side
+        pos_ob = self.market.get_orderbook(pos)
+        neg_ob = self.market.get_orderbook(neg)
+        pos_label = pos.upper()
+        neg_label = neg.upper()
 
-        lines.append(f"{Colors.GREEN}{'UP':^39}{Colors.RESET}|{Colors.RED}{'DOWN':^39}{Colors.RESET}")
+        lines.append(f"{Colors.GREEN}{pos_label:^39}{Colors.RESET}|{Colors.RED}{neg_label:^39}{Colors.RESET}")
         lines.append(f"{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}|{'Bid':>9} {'Size':>9} | {'Ask':>9} {'Size':>9}")
         lines.append("-" * 80)
 
         # Get 5 levels
-        up_bids = up_ob.bids[:5] if up_ob else []
-        up_asks = up_ob.asks[:5] if up_ob else []
-        down_bids = down_ob.bids[:5] if down_ob else []
-        down_asks = down_ob.asks[:5] if down_ob else []
+        pos_bids = pos_ob.bids[:5] if pos_ob else []
+        pos_asks = pos_ob.asks[:5] if pos_ob else []
+        neg_bids = neg_ob.bids[:5] if neg_ob else []
+        neg_asks = neg_ob.asks[:5] if neg_ob else []
 
         for i in range(5):
-            up_bid = f"{up_bids[i].price:>9.4f} {up_bids[i].size:>9.1f}" if i < len(up_bids) else f"{'--':>9} {'--':>9}"
-            up_ask = f"{up_asks[i].price:>9.4f} {up_asks[i].size:>9.1f}" if i < len(up_asks) else f"{'--':>9} {'--':>9}"
-            down_bid = f"{down_bids[i].price:>9.4f} {down_bids[i].size:>9.1f}" if i < len(down_bids) else f"{'--':>9} {'--':>9}"
-            down_ask = f"{down_asks[i].price:>9.4f} {down_asks[i].size:>9.1f}" if i < len(down_asks) else f"{'--':>9} {'--':>9}"
-            lines.append(f"{up_bid} | {up_ask}|{down_bid} | {down_ask}")
+            pb = f"{pos_bids[i].price:>9.4f} {pos_bids[i].size:>9.1f}" if i < len(pos_bids) else f"{'--':>9} {'--':>9}"
+            pa = f"{pos_asks[i].price:>9.4f} {pos_asks[i].size:>9.1f}" if i < len(pos_asks) else f"{'--':>9} {'--':>9}"
+            nb = f"{neg_bids[i].price:>9.4f} {neg_bids[i].size:>9.1f}" if i < len(neg_bids) else f"{'--':>9} {'--':>9}"
+            na = f"{neg_asks[i].price:>9.4f} {neg_asks[i].size:>9.1f}" if i < len(neg_asks) else f"{'--':>9} {'--':>9}"
+            lines.append(f"{pb} | {pa}|{nb} | {na}")
 
         lines.append("-" * 80)
 
         # Summary
-        up_mid = up_ob.mid_price if up_ob else prices.get("up", 0)
-        down_mid = down_ob.mid_price if down_ob else prices.get("down", 0)
-        up_spread = self.market.get_spread("up")
-        down_spread = self.market.get_spread("down")
+        pos_mid = pos_ob.mid_price if pos_ob else prices.get(pos, 0)
+        neg_mid = neg_ob.mid_price if neg_ob else prices.get(neg, 0)
+        pos_spread = self.market.get_spread(pos)
+        neg_spread = self.market.get_spread(neg)
 
         lines.append(
-            f"Mid: {Colors.GREEN}{up_mid:.4f}{Colors.RESET}  Spread: {up_spread:.4f}           |"
-            f"Mid: {Colors.RED}{down_mid:.4f}{Colors.RESET}  Spread: {down_spread:.4f}"
+            f"Mid: {Colors.GREEN}{pos_mid:.4f}{Colors.RESET}  Spread: {pos_spread:.4f}           |"
+            f"Mid: {Colors.RED}{neg_mid:.4f}{Colors.RESET}  Spread: {neg_spread:.4f}"
         )
 
         # Drop delta: current price vs price from lookback_seconds ago
         lookback = self.config.price_lookback_seconds
-        up_old = self.prices.get_price_at("up", lookback)
-        down_old = self.prices.get_price_at("down", lookback)
-        up_delta = (up_mid - up_old) if up_old and up_mid else 0
-        down_delta = (down_mid - down_old) if down_old and down_mid else 0
-        up_delta_color = Colors.RED if up_delta <= -self.flash_config.drop_threshold else Colors.GREEN if up_delta > 0 else ""
-        down_delta_color = Colors.RED if down_delta <= -self.flash_config.drop_threshold else Colors.GREEN if down_delta > 0 else ""
-        up_delta_str = f"{up_delta_color}{up_delta:+.4f}{Colors.RESET}" if up_old else "  n/a "
-        down_delta_str = f"{down_delta_color}{down_delta:+.4f}{Colors.RESET}" if down_old else "  n/a "
+        pos_old = self.prices.get_price_at(pos, lookback)
+        neg_old = self.prices.get_price_at(neg, lookback)
+        pos_delta = (pos_mid - pos_old) if pos_old and pos_mid else 0
+        neg_delta = (neg_mid - neg_old) if neg_old and neg_mid else 0
+        pos_delta_color = Colors.RED if pos_delta <= -self.flash_config.drop_threshold else Colors.GREEN if pos_delta > 0 else ""
+        neg_delta_color = Colors.RED if neg_delta <= -self.flash_config.drop_threshold else Colors.GREEN if neg_delta > 0 else ""
+        pos_delta_str = f"{pos_delta_color}{pos_delta:+.4f}{Colors.RESET}" if pos_old else "  n/a "
+        neg_delta_str = f"{neg_delta_color}{neg_delta:+.4f}{Colors.RESET}" if neg_old else "  n/a "
 
         lines.append(
-            f"Delta({lookback}s): UP={up_delta_str}  DOWN={down_delta_str} | "
+            f"Delta({lookback}s): {pos_label}={pos_delta_str}  {neg_label}={neg_delta_str} | "
             f"Threshold: {self.flash_config.drop_threshold:.2f}"
         )
 
@@ -236,8 +242,11 @@ class FlashCrashStrategy(BaseStrategy):
                 filled = float(order.get("size_matched", 0))
                 order_id = order.get("id", "")[:8]
                 token = order.get("asset_id", "")
-                # Determine if UP or DOWN
-                token_side = "UP" if token == self.token_ids.get("up") else "DOWN" if token == self.token_ids.get("down") else "?"
+                token_side = "?"
+                for s, tid in self.token_ids.items():
+                    if token == tid:
+                        token_side = s.upper()
+                        break
                 color = Colors.GREEN if side == "BUY" else Colors.RED
                 lines.append(f"  {color}{side:4}{Colors.RESET} {token_side:4} @ {price:.4f} Size: {size:.1f} Filled: {filled:.1f} ID: {order_id}...")
         else:

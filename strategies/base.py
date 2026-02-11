@@ -46,10 +46,12 @@ class StrategyConfig:
     """Base strategy configuration."""
 
     coin: str = "ETH"
+    slug: str = ""  # Direct market slug (overrides coin for any market)
     size: float = 5.0  # USDC size per trade
     max_positions: int = 1
     take_profit: float = 0.30  # 30% gain
     stop_loss: float = 0.25  # 25% loss
+    min_hold_seconds: float = 5.0  # Minimum seconds before exit checks kick in
 
     def __post_init__(self):
         # Auto-convert if user passed percentages as whole numbers (e.g. 25 instead of 0.25)
@@ -74,8 +76,9 @@ class StrategyConfig:
     def add_args(cls, parser: argparse.ArgumentParser) -> None:
         """Add common CLI arguments. Override to add strategy-specific args."""
         parser.add_argument("--coin", type=str, default="BTC",
-                            choices=["BTC", "ETH", "SOL", "XRP"],
                             help="Coin to trade (default: BTC)")
+        parser.add_argument("--slug", type=str, default="",
+                            help="Market slug (overrides --coin, for any market)")
         parser.add_argument("--size", type=float, default=1.0,
                             help="Trade size in USDC (default: 1.0)")
         parser.add_argument("--take-profit", type=float, default=0.30,
@@ -84,6 +87,8 @@ class StrategyConfig:
                             help="Stop loss percentage, e.g. 0.25 = 25%% (default: 0.25)")
         parser.add_argument("--lookback", type=int, default=10,
                             help="Price lookback window in seconds (default: 10)")
+        parser.add_argument("--min-hold", type=float, default=5.0,
+                            help="Minimum hold time in seconds before exits (default: 5.0)")
         parser.add_argument("--debug", action="store_true",
                             help="Enable debug logging")
 
@@ -92,9 +97,11 @@ class StrategyConfig:
         """Create config from parsed CLI args. Override for strategy-specific args."""
         return cls(
             coin=args.coin.upper(),
+            slug=getattr(args, "slug", ""),
             size=args.size,
             take_profit=args.take_profit,
             stop_loss=args.stop_loss,
+            min_hold_seconds=args.min_hold,
             price_lookback_seconds=args.lookback,
         )
 
@@ -144,6 +151,7 @@ class BaseStrategy(ABC):
         # Core components
         self.market = MarketManager(
             coin=config.coin,
+            slug=config.slug or None,
             market_check_interval=config.market_check_interval,
             auto_switch_market=config.auto_switch_market,
         )
@@ -185,6 +193,28 @@ class BaseStrategy(ABC):
     def token_ids(self) -> Dict[str, str]:
         """Get current token IDs."""
         return self.market.token_ids
+
+    @property
+    def sides(self) -> list:
+        """Get outcome side names (e.g. ['up', 'down'] or ['yes', 'no'])."""
+        return list(self.token_ids.keys())
+
+    @property
+    def positive_side(self) -> str:
+        """First outcome (up/yes) — the side that goes up with positive news."""
+        return self.sides[0] if self.sides else ""
+
+    @property
+    def negative_side(self) -> str:
+        """Second outcome (down/no) — the opposite side."""
+        return self.sides[1] if len(self.sides) > 1 else ""
+
+    @property
+    def market_label(self) -> str:
+        """Label for current market (coin name or slug)."""
+        if self.config.slug:
+            return self.config.slug[:30]
+        return self.config.coin
 
     @property
     def open_orders(self) -> List[dict]:
@@ -342,7 +372,7 @@ class BaseStrategy(ABC):
     def _get_current_prices(self) -> Dict[str, float]:
         """Get current prices from market manager."""
         prices = {}
-        for side in ["up", "down"]:
+        for side in self.token_ids:
             price = self.market.get_mid_price(side)
             if price > 0:
                 prices[side] = price
@@ -351,7 +381,7 @@ class BaseStrategy(ABC):
     async def _check_exits(self, prices: Dict[str, float]) -> None:
         """Check and execute exits using best bid (actual sell price), not mid."""
         bid_prices = {}
-        for side in ["up", "down"]:
+        for side in self.token_ids:
             best_bid = self.market.get_best_bid(side)
             if best_bid > 0:
                 bid_prices[side] = best_bid
@@ -361,6 +391,9 @@ class BaseStrategy(ABC):
         exits = self.positions.check_all_exits(bid_prices)
 
         for position, exit_type, _pnl in exits:
+            # Skip exits for positions still within minimum hold time
+            if position.get_hold_time() < self.config.min_hold_seconds:
+                continue
             await self.execute_sell(position, prices.get(position.side, 0), exit_type=exit_type)
 
     async def execute_buy(self, side: str, current_price: float) -> bool:
@@ -441,11 +474,17 @@ class BaseStrategy(ABC):
             True if sell order filled
         """
         # Use actual on-chain balance as the sell size (ground truth)
-        on_chain_balance = await self.bot.get_token_balance(position.token_id)
+        # Retry a few times if balance is 0 — on-chain settlement may lag
+        on_chain_balance = 0
+        for attempt in range(3):
+            on_chain_balance = await self.bot.get_token_balance(position.token_id)
+            if on_chain_balance > 0:
+                break
+            if attempt < 2:
+                await asyncio.sleep(2)
+
         if on_chain_balance <= 0:
-            if position.order_id:
-                await self.bot.cancel_order(position.order_id)
-            self.positions.close_position(position.id, realized_pnl=0)
+            self.log(f"Sell skipped: no on-chain balance for {position.side.upper()} (settlement pending?)", "warning")
             return False
 
         sell_size = on_chain_balance

@@ -98,7 +98,10 @@ def main():
     print(f"{Colors.BOLD}  {strategy_cls.description}{Colors.RESET}")
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n")
     print(f"Strategy: {strategy_name}")
-    print(f"Coin: {strategy_config.coin} | Size: ${strategy_config.size:.2f}")
+    if strategy_config.slug:
+        print(f"Market: {strategy_config.slug} | Size: ${strategy_config.size:.2f}")
+    else:
+        print(f"Coin: {strategy_config.coin} | Size: ${strategy_config.size:.2f}")
     print(f"TP: +{strategy_config.take_profit*100:.0f}% | SL: -{strategy_config.stop_loss*100:.0f}%")
     print()
 
