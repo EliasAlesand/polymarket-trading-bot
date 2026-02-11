@@ -38,7 +38,7 @@ from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker
 from lib.position_manager import PositionManager, Position
 from src.bot import TradingBot
-from src.websocket_client import OrderbookSnapshot
+from src.websocket_client import OrderbookSnapshot, LastTradePrice
 
 
 @dataclass
@@ -259,6 +259,10 @@ class BaseStrategy(ABC):
 
             # Delegate to subclass
             await self.on_book_update(snapshot)
+
+        @self.market.on_trade
+        async def handle_trade(trade: LastTradePrice):  # pyright: ignore[reportUnusedFunction]
+            await self.on_trade(trade)
 
         @self.market.on_market_change
         def handle_market_change(old_slug: str, new_slug: str):  # pyright: ignore[reportUnusedFunction]
@@ -531,6 +535,10 @@ class BaseStrategy(ABC):
 
     def on_market_change(self, old_slug: str, new_slug: str) -> None:
         """Called when market changes."""
+        pass
+
+    async def on_trade(self, trade: LastTradePrice) -> None:
+        """Called when a trade executes on the market. Override to process trade flow."""
         pass
 
     def on_connect(self) -> None:

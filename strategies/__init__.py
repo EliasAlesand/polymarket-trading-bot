@@ -20,7 +20,8 @@ import pkgutil
 
 from strategies.base import BaseStrategy, StrategyConfig
 from strategies.flash_crash import FlashCrashStrategy, FlashCrashConfig
-from strategies.orderbook_imbalance import OrderbookImbalanceStrategy, OrderbookImbalanceConfig
+from strategies.trade_flow import TradeFlowStrategy, TradeFlowConfig
+from strategies.event_burst import EventBurstStrategy, EventBurstConfig
 
 
 def _discover_strategies():
@@ -48,8 +49,10 @@ __all__ = [
     "StrategyConfig",
     "FlashCrashStrategy",
     "FlashCrashConfig",
-    "OrderbookImbalanceStrategy",
-    "OrderbookImbalanceConfig",
+    "TradeFlowStrategy",
+    "TradeFlowConfig",
+    "EventBurstStrategy",
+    "EventBurstConfig",
     "get_strategy",
     "list_strategies",
 ]

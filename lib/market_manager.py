@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Callable, List, Union, Awaitable
 
 from src.gamma_client import GammaClient
-from src.websocket_client import MarketWebSocket, OrderbookSnapshot
+from src.websocket_client import MarketWebSocket, OrderbookSnapshot, LastTradePrice
 
 
 @dataclass
@@ -131,6 +131,7 @@ class MarketInfo:
 
 # Callback type aliases
 BookCallback = Callable[[OrderbookSnapshot], Union[None, Awaitable[None]]]
+TradeCallback = Callable[[LastTradePrice], Union[None, Awaitable[None]]]
 MarketChangeCallback = Callable[[str, str], None]  # (old_slug, new_slug)
 ConnectionCallback = Callable[[], None]
 
@@ -178,6 +179,7 @@ class MarketManager:
 
         # Callbacks
         self._on_book_callbacks: List[BookCallback] = []
+        self._on_trade_callbacks: List[TradeCallback] = []
         self._on_market_change_callbacks: List[MarketChangeCallback] = []
         self._on_connect_callbacks: List[ConnectionCallback] = []
         self._on_disconnect_callbacks: List[ConnectionCallback] = []
@@ -242,6 +244,11 @@ class MarketManager:
     def on_book_update(self, callback: BookCallback) -> BookCallback:
         """Register book update callback."""
         self._on_book_callbacks.append(callback)
+        return callback
+
+    def on_trade(self, callback: TradeCallback) -> TradeCallback:
+        """Register trade callback (last_trade_price events)."""
+        self._on_trade_callbacks.append(callback)
         return callback
 
     def on_market_change(self, callback: MarketChangeCallback) -> MarketChangeCallback:
@@ -331,6 +338,16 @@ class MarketManager:
             for callback in self._on_book_callbacks:
                 try:
                     result = callback(snapshot)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    pass
+
+        @self.ws.on_trade
+        async def handle_trade(trade: LastTradePrice):  # pyright: ignore[reportUnusedFunction]
+            for callback in self._on_trade_callbacks:
+                try:
+                    result = callback(trade)
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception:
