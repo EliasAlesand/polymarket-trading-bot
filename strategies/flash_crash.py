@@ -165,6 +165,7 @@ class FlashCrashStrategy(BaseStrategy):
         ws_status = f"{Colors.GREEN}WS{Colors.RESET}" if self.is_connected else f"{Colors.RED}REST{Colors.RESET}"
         countdown = self._get_countdown_str()
         stats = self.positions.get_stats()
+        total_pnl = self.positions.get_total_pnl(prices)
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         mode_str = f"{Colors.YELLOW}MOMENTUM{Colors.RESET}" if self.flash_config.reverse else "REVERT"
@@ -172,7 +173,7 @@ class FlashCrashStrategy(BaseStrategy):
             f"{Colors.CYAN}[{self.market_label}]{Colors.RESET} [{ws_status}] [{mode_str}] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
-            f"WR: {stats['win_rate']:.0f}% | PnL: ${stats['total_pnl']:+.2f}"
+            f"WR: {stats['win_rate']:.0f}% | PnL: ${total_pnl:+.2f}"
         )
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 

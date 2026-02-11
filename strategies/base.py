@@ -448,12 +448,17 @@ class BaseStrategy(ABC):
             if actual_size < size:
                 await self.bot.cancel_order(result.order_id)
 
-        # Track actual execution price (buy_price), not mid price
-        self.log(f"BUY {side.upper()} @ {buy_price:.4f} x{actual_size:.2f}", "success")
+        # Get actual fill price from trades (CLOB can fill at better prices)
+        entry_price = buy_price  # fallback to limit price
+        avg_fill = await self.bot.get_average_fill_price(result.order_id, token_id)
+        if avg_fill and avg_fill > 0:
+            entry_price = avg_fill
+
+        self.log(f"BUY {side.upper()} @ {entry_price:.4f} x{actual_size:.2f}", "success")
         self.positions.open_position(
             side=side,
             token_id=token_id,
-            entry_price=buy_price,
+            entry_price=entry_price,
             size=actual_size,
             order_id=result.order_id,
         )

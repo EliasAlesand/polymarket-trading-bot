@@ -47,7 +47,7 @@ class EventBurstConfig(StrategyConfig):
     # Exit rules
     profit_target: float = 0.15     # +15% price move
     max_hold_seconds: float = 90.0  # Time-based exit
-    liquidity_recovery: float = 0.8 # Depth recovery ratio to exit
+    liquidity_recovery: float = 0.95 # Depth recovery ratio to exit
 
     # Safety
     max_price: float = 0.85         # Never buy above
@@ -497,6 +497,7 @@ class EventBurstStrategy(BaseStrategy):
         ws_status = f"{Colors.GREEN}WS{Colors.RESET}" if self.is_connected else f"{Colors.RED}REST{Colors.RESET}"
         countdown = self._get_countdown_str()
         stats = self.positions.get_stats()
+        total_pnl = self.positions.get_total_pnl(prices)
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         lines.append(
@@ -504,7 +505,7 @@ class EventBurstStrategy(BaseStrategy):
             f"[EVENT BURST 4-filter] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
-            f"WR: {stats['win_rate']:.0f}% | PnL: ${stats['total_pnl']:+.2f}"
+            f"WR: {stats['win_rate']:.0f}% | PnL: ${total_pnl:+.2f}"
         )
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 

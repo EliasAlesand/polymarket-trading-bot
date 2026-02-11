@@ -93,6 +93,7 @@ def main():
     parser.add_argument("--top", type=int, default=0, help="Show top N events by volume")
     parser.add_argument("--markets", action="store_true", help="Show individual markets under each event")
     parser.add_argument("--upcoming", action="store_true", help="Only show upcoming (not yet live) events")
+    parser.add_argument("--limit", type=int, default=0, help="Max events to show (default: 0 = no limit)")
     args = parser.parse_args()
 
     gamma = GammaClient()
@@ -103,7 +104,6 @@ def main():
         "closed": False,
         "order": "volume24hr",
         "ascending": False,
-        "limit": 100,
     }
 
     if args.sport:
@@ -112,19 +112,36 @@ def main():
     if args.min_volume > 0:
         params["volume_min"] = args.min_volume
 
+    # Pass live/upcoming filters to the API so we don't miss results due to limit
+    if args.live:
+        params["live"] = True
+    elif args.upcoming:
+        params["live"] = False
+        params["ended"] = False
+
     print(f"\n{Colors.BOLD}Scanning Polymarket events...{Colors.RESET}\n")
 
-    events = gamma.list_events(**params)
+    # Paginate to collect all matching events
+    page_size = 100
+    events = []
+    offset = 0
+    while True:
+        params["limit"] = page_size
+        params["offset"] = offset
+        batch = gamma.list_events(**params)
+        if not batch:
+            break
+        events.extend(batch)
+        if len(batch) < page_size or (args.limit and len(events) >= args.limit):
+            break
+        offset += page_size
+
+    if args.limit:
+        events = events[:args.limit]
 
     if not events:
         print(f"{Colors.RED}No events found.{Colors.RESET}")
         return
-
-    # Filter
-    if args.live:
-        events = [e for e in events if e.get("live")]
-    elif args.upcoming:
-        events = [e for e in events if not e.get("live") and not e.get("ended")]
 
     # Sort by 24h volume descending
     events.sort(key=lambda e: float(e.get("volume24hr") or 0), reverse=True)
@@ -177,7 +194,7 @@ def main():
             # Sort markets by volume
             markets.sort(key=lambda m: float(m.get("volumeNum") or 0), reverse=True)
 
-            for mkt in markets[:10]:  # Max 10 markets per event
+            for mkt in markets:
                 slug = mkt.get("slug") or "?"
                 question = (mkt.get("question") or "")[:50]
                 mkt_vol = float(mkt.get("volumeNum") or 0)
@@ -196,8 +213,6 @@ def main():
                     f"{prices}  {Colors.DIM}--slug {slug}{Colors.RESET}"
                 )
 
-            if len(markets) > 10:
-                print(f"     {Colors.DIM}... +{len(markets) - 10} more markets{Colors.RESET}")
             print()
 
     print("-" * 100)

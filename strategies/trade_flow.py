@@ -327,6 +327,7 @@ class TradeFlowStrategy(BaseStrategy):
         ws_status = f"{Colors.GREEN}WS{Colors.RESET}" if self.is_connected else f"{Colors.RED}REST{Colors.RESET}"
         countdown = self._get_countdown_str()
         stats = self.positions.get_stats()
+        total_pnl = self.positions.get_total_pnl(prices)
         threshold = self.tf_config.flow_threshold
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
@@ -336,7 +337,7 @@ class TradeFlowStrategy(BaseStrategy):
             f"{self.tf_config.window_seconds:.0f}s] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
-            f"WR: {stats['win_rate']:.0f}% | PnL: ${stats['total_pnl']:+.2f}"
+            f"WR: {stats['win_rate']:.0f}% | PnL: ${total_pnl:+.2f}"
         )
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 

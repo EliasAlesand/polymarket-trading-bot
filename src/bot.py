@@ -643,6 +643,44 @@ class TradingBot:
             logger.error(f"Failed to get trades: {e}")
             return []
 
+    async def get_average_fill_price(self, order_id: str, token_id: str) -> Optional[float]:
+        """
+        Get the actual average fill price for a filled order by querying trades.
+
+        The CLOB can fill orders at better prices than the limit price (price
+        improvement), so the submitted price != actual execution price.
+
+        Args:
+            order_id: Order ID to look up
+            token_id: Token ID (for filtering trades)
+
+        Returns:
+            Weighted average fill price, or None if not determinable
+        """
+        try:
+            trades = await self.get_trades(token_id=token_id, limit=20)
+            if not trades:
+                return None
+
+            total_size = 0.0
+            total_notional = 0.0
+            for trade in trades:
+                if trade.get("taker_order_id") == order_id:
+                    price = float(trade.get("price", 0))
+                    size = float(trade.get("size", 0))
+                    if price > 0 and size > 0:
+                        total_notional += price * size
+                        total_size += size
+
+            if total_size > 0:
+                avg_price = total_notional / total_size
+                logger.debug(f"Average fill price for {order_id}: {avg_price:.4f}")
+                return avg_price
+            return None
+        except Exception as e:
+            logger.debug(f"Could not determine fill price: {e}")
+            return None
+
     async def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """
         Get order book for a token.
