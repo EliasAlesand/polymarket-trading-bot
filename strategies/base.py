@@ -479,14 +479,16 @@ class BaseStrategy(ABC):
             True if sell order filled
         """
         # Use actual on-chain balance as the sell size (ground truth)
-        # Retry a few times if balance is 0 — on-chain settlement may lag
+        # Retry with backoff — on-chain settlement may lag, RPC may rate-limit
         on_chain_balance = 0
-        for attempt in range(3):
+        for attempt in range(5):
             on_chain_balance = await self.bot.get_token_balance(position.token_id)
             if on_chain_balance > 0:
                 break
-            if attempt < 2:
-                await asyncio.sleep(2)
+            if attempt < 4:
+                wait = 3 * (attempt + 1)  # 3s, 6s, 9s, 12s
+                self.log(f"Balance check {attempt+1}/5 returned 0, retrying in {wait}s...", "debug")
+                await asyncio.sleep(wait)
 
         if on_chain_balance <= 0:
             self.log(f"Sell skipped: no on-chain balance for {position.side.upper()} (settlement pending?)", "warning")

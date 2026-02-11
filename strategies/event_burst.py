@@ -38,20 +38,23 @@ class EventBurstConfig(StrategyConfig):
     # Filter thresholds
     burst_ratio: float = 3.0        # Volume must be Nx baseline
     burst_window: float = 10.0      # Recent volume window (seconds)
-    baseline_window: float = 60.0   # Baseline volume window (seconds)
+    baseline_window: float = 30.0   # Baseline volume window (seconds)
     min_price_impact: float = 0.015 # Min absolute price change (probability points)
     max_volume_ratio: float = 2.0   # Max volume for "informed" (vs crowd)
     liquidity_drop: float = 0.6     # Depth must drop below this ratio
     min_liquidity: float = 0.10     # Block entry if depth below this ratio (empty book)
-    spread_expansion: float = 1.8   # Spread must be Nx average
+    spread_expansion: float = 1.2   # Spread must be Nx average
 
     # Exit rules
     profit_target: float = 0.15     # +15% price move
     max_hold_seconds: float = 90.0  # Time-based exit
 
+    # Mode
+    reverse: bool = False           # Fade mode: buy opposite side of burst
+
     # Safety
-    max_price: float = 0.85         # Never buy above
-    min_price: float = 0.15         # Never buy below
+    max_price: float = 0.92         # Never buy above
+    min_price: float = 0.08         # Never buy below
     cooldown_seconds: float = 30.0  # Between trades
     warmup_seconds: float = 60.0    # Wait for data before trading
 
@@ -69,14 +72,16 @@ class EventBurstConfig(StrategyConfig):
                             help="Min price impact in probability points (default: 0.015)")
         parser.add_argument("--liq-drop", type=float, default=0.6,
                             help="Liquidity drop ratio threshold (default: 0.6)")
-        parser.add_argument("--spread-exp", type=float, default=1.8,
-                            help="Spread expansion multiplier (default: 1.8)")
+        parser.add_argument("--spread-exp", type=float, default=1.2,
+                            help="Spread expansion multiplier (default: 1.2)")
         parser.add_argument("--profit", type=float, default=0.15,
                             help="Profit target as fraction (default: 0.15 = 15%%)")
         parser.add_argument("--max-hold", type=float, default=90.0,
                             help="Max hold time in seconds (default: 90)")
         parser.add_argument("--cooldown", type=float, default=30.0,
                             help="Seconds between trades (default: 30)")
+        parser.add_argument("--reverse", action="store_true",
+                            help="Fade mode: buy opposite side of burst (mean reversion)")
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "EventBurstConfig":
@@ -98,6 +103,7 @@ class EventBurstConfig(StrategyConfig):
             profit_target=args.profit,
             max_hold_seconds=args.max_hold,
             cooldown_seconds=args.cooldown,
+            reverse=args.reverse,
         )
 
 
@@ -377,7 +383,11 @@ class EventBurstStrategy(BaseStrategy):
             )
             return
 
-        buy_side = direction
+        # In reverse (fade) mode, buy the opposite side of the burst
+        if self.eb_config.reverse:
+            buy_side = self.negative_side if direction == self.positive_side else self.positive_side
+        else:
+            buy_side = direction
         current_price = prices.get(buy_side, 0)
         if current_price <= 0:
             return
@@ -490,9 +500,10 @@ class EventBurstStrategy(BaseStrategy):
         total_pnl = self.positions.get_total_pnl(prices)
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
+        mode_str = f"{Colors.YELLOW}FADE{Colors.RESET}" if self.eb_config.reverse else "MOMENTUM"
         lines.append(
             f"{Colors.CYAN}[{self.market_label}]{Colors.RESET} [{ws_status}] "
-            f"[EVENT BURST 4-filter] "
+            f"[EVENT BURST {mode_str}] "
             f"Ends: {countdown} | Trades: {stats['trades_closed']} "
             f"({stats['winning_trades']}W/{stats['losing_trades']}L) | "
             f"WR: {stats['win_rate']:.0f}% | PnL: ${total_pnl:+.2f}"
