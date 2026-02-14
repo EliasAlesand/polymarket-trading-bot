@@ -46,15 +46,16 @@ class EventBurstConfig(StrategyConfig):
     spread_expansion: float = 1.2   # Spread must be Nx average
 
     # Exit rules
-    profit_target: float = 0.15     # +15% price move
-    max_hold_seconds: float = 90.0  # Time-based exit
+    profit_target: float = 0.20     # +20% price move
+    stop_target: float = 0.10       # -10% stop loss
+    max_hold_seconds: float = 30.0  # Time-based exit
 
     # Mode
     reverse: bool = False           # Fade mode: buy opposite side of burst
 
     # Safety
-    max_price: float = 0.92         # Never buy above
-    min_price: float = 0.08         # Never buy below
+    max_price: float = 0.9         # Never buy above
+    min_price: float = 0.1         # Never buy below
     cooldown_seconds: float = 30.0  # Between trades
     warmup_seconds: float = 60.0    # Wait for data before trading
 
@@ -74,10 +75,12 @@ class EventBurstConfig(StrategyConfig):
                             help="Liquidity drop ratio threshold (default: 0.6)")
         parser.add_argument("--spread-exp", type=float, default=1.2,
                             help="Spread expansion multiplier (default: 1.2)")
-        parser.add_argument("--profit", type=float, default=0.15,
-                            help="Profit target as fraction (default: 0.15 = 15%%)")
-        parser.add_argument("--max-hold", type=float, default=90.0,
-                            help="Max hold time in seconds (default: 90)")
+        parser.add_argument("--profit", type=float, default=0.20,
+                            help="Profit target as fraction (default: 0.20 = 20%%)")
+        parser.add_argument("--stop", type=float, default=0.10,
+                            help="Stop loss as fraction (default: 0.10 = 10%%)")
+        parser.add_argument("--max-hold", type=float, default=30.0,
+                            help="Max hold time in seconds (default: 30)")
         parser.add_argument("--cooldown", type=float, default=30.0,
                             help="Seconds between trades (default: 30)")
         parser.add_argument("--reverse", action="store_true",
@@ -101,6 +104,7 @@ class EventBurstConfig(StrategyConfig):
             liquidity_drop=args.liq_drop,
             spread_expansion=args.spread_exp,
             profit_target=args.profit,
+            stop_target=args.stop,
             max_hold_seconds=args.max_hold,
             cooldown_seconds=args.cooldown,
             reverse=args.reverse,
@@ -385,7 +389,8 @@ class EventBurstStrategy(BaseStrategy):
 
         # In reverse (fade) mode, buy the opposite side of the burst
         if self.eb_config.reverse:
-            buy_side = self.negative_side if direction == self.positive_side else self.positive_side
+            sides = self.sides
+            buy_side = sides[1] if direction == sides[0] else sides[0]
         else:
             buy_side = direction
         current_price = prices.get(buy_side, 0)
@@ -411,7 +416,7 @@ class EventBurstStrategy(BaseStrategy):
 
         # All filters passed — enter
         self.log(
-            f"BURST: {buy_side.upper()} vol={burst_val:.1f}x "
+            f"BURST {direction.upper()} → BUY {buy_side.upper()} @ {current_price:.4f} vol={burst_val:.1f}x "
             f"impact={impact_val:.3f} liq={liq_val:.2f} spread={spread_val:.1f}x",
             "trade"
         )
@@ -443,8 +448,8 @@ class EventBurstStrategy(BaseStrategy):
             if pnl_pct >= self.eb_config.profit_target:
                 exit_reason = "PROFIT"
 
-            # Stop loss (negative profit target)
-            elif pnl_pct <= -self.eb_config.profit_target:
+            # Stop loss
+            elif pnl_pct <= -self.eb_config.stop_target:
                 exit_reason = "STOP"
 
             # Time limit
@@ -667,7 +672,7 @@ class EventBurstStrategy(BaseStrategy):
 
                 # Show exit conditions
                 target_price = pos.entry_price * (1 + self.eb_config.profit_target)
-                stop_price = pos.entry_price * (1 - self.eb_config.profit_target)
+                stop_price = pos.entry_price * (1 - self.eb_config.stop_target)
                 lines.append(
                     f"       Target: {target_price:.4f} | Stop: {stop_price:.4f}"
                 )

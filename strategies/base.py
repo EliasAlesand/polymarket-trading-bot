@@ -27,10 +27,13 @@ Usage:
 
 import argparse
 import asyncio
+import csv
 import math
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
+from datetime import datetime
 from typing import Optional, Dict, List, ClassVar, Type
 
 from lib.console import LogBuffer, log
@@ -173,6 +176,7 @@ class BaseStrategy(ABC):
 
         # Logging
         self._log_buffer = LogBuffer(max_size=5)
+        self._trade_log = self._init_trade_log()
 
         # Open orders cache (refreshed in background)
         self._cached_orders: List[dict] = []
@@ -269,6 +273,35 @@ class BaseStrategy(ABC):
         else:
             log(msg, level)
 
+    def _init_trade_log(self) -> str:
+        """Create trade log CSV file with headers. Returns file path."""
+        os.makedirs("logs", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        strategy = self.__class__.name or "unknown"
+        path = f"logs/{strategy}_{ts}.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "timestamp", "action", "side", "price", "size",
+                "pnl", "hold_seconds", "exit_type", "market",
+            ])
+        return path
+
+    def _log_trade(self, action: str, side: str, price: float, size: float,
+                   pnl: float = 0.0, hold_seconds: float = 0.0, exit_type: str = "") -> None:
+        """Append a trade row to the CSV log."""
+        try:
+            with open(self._trade_log, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    datetime.now().isoformat(timespec="seconds"),
+                    action, side, f"{price:.4f}", f"{size:.4f}",
+                    f"{pnl:.4f}", f"{hold_seconds:.1f}", exit_type,
+                    self.market_label,
+                ])
+        except Exception:
+            pass  # never crash on logging
+
     async def start(self) -> bool:
         """
         Start the strategy.
@@ -309,6 +342,8 @@ class BaseStrategy(ABC):
         def handle_disconnect():  # pyright: ignore[reportUnusedFunction]
             self.log("WebSocket disconnected", "warning")
             self.on_disconnect()
+
+        self.log(f"Trade log: {self._trade_log}")
 
         # Start market manager
         if not await self.market.start():
@@ -455,6 +490,7 @@ class BaseStrategy(ABC):
             entry_price = avg_fill
 
         self.log(f"BUY {side.upper()} @ {entry_price:.4f} x{actual_size:.2f}", "success")
+        self._log_trade("BUY", side, entry_price, actual_size)
         self.positions.open_position(
             side=side,
             token_id=token_id,
@@ -527,7 +563,10 @@ class BaseStrategy(ABC):
         elif exit_type == "stop_loss":
             reason = "SL "
         level = "success" if pnl >= 0 else "warning"
+        hold_seconds = position.get_hold_time()
         self.log(f"{reason}SELL {position.side.upper()} @ {actual_sell_price:.4f} PnL: ${pnl:+.2f}", level)
+        self._log_trade("SELL", position.side, actual_sell_price, position.size,
+                        pnl=pnl, hold_seconds=hold_seconds, exit_type=exit_type or "")
         self.positions.close_position(position.id, realized_pnl=pnl)
         return True
 
